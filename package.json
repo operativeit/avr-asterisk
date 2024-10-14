@@ -1,0 +1,11 @@
+{
+  "name": "avr-asterisk",
+  "version": "1.0.0",
+  "description": "",
+  "author": "Giuseppe Careri <info@gcareri.com> (https://gcareri.com)",
+  "contributors": [],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentvoiceresponse/avr-asterisk.git"
+  }
+}
