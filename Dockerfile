@@ -8,8 +8,7 @@ RUN set -ex; \
     apt-get install -y --no-install-recommends \
         software-properties-common \
         build-essential pkg-config \
-        wget subversion bzip2 patch \
-        uuid-realtime \
+        wget subversion bzip2 patch uuid-runtime \
         libedit-dev libjansson-dev libsqlite3-dev uuid-dev libxml2-dev  \
         liburiparser1 libgsm1 libcurl4-openssl-dev libssl-dev; \
     cd /usr/src; \
