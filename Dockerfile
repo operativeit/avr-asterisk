@@ -105,7 +105,6 @@ RUN set -ex; \
     menuselect/menuselect --disable res_pjsip_t38 menuselect.makeopts; \
     menuselect/menuselect --disable res_pjsip_config_wizard menuselect.makeopts; \
     menuselect/menuselect --disable res_pjsip_phoneprov_provider menuselect.makeopts; \
-    menuselect/menuselect --disable res_prometheus menuselect.makeopts; \
     menuselect/menuselect --disable pbx_lua menuselect.makeopts; \
     menuselect/menuselect --disable pbx_ael menuselect.makeopts; \
     menuselect/menuselect --disable pbx_spool menuselect.makeopts; \
@@ -206,6 +205,7 @@ RUN set -ex; \
     menuselect/menuselect --enable codec_gsm menuselect.makeopts; \
     menuselect/menuselect --enable format_gsm menuselect.makeopts; \
     menuselect/menuselect --enable res_agi menuselect.makeopts; \
+    menuselect/menuselect --enable res_prometheus menuselect.makeopts; \
     make -j$(grep -c ^processor /proc/cpuinfo); \
     make install; \
     make samples; \
@@ -249,7 +249,10 @@ COPY --from=builder /usr/lib/libasteriskssl.so.1 \
 
 RUN sed -i 's/enabled = no/enabled = yes/' /etc/asterisk/manager.conf; \
     sed -i 's/rtpend=20000/rtpend=10050/' /etc/asterisk/rtp.conf; \
-    sed -i 's/enabled = no/enabled = yes/' /etc/asterisk/prometheus.conf;
+    sed -i 's/enabled = no/enabled = yes/' /etc/asterisk/prometheus.conf; \
+    sed -i 's/;enabled=yes/enabled=yes/' /etc/asterisk/http.conf; \
+    sed -i 's/bindaddr=127.0.0.1/bindaddr=0.0.0.0/' /etc/asterisk/http.conf;
+
 
 RUN echo "#include \"extensions_avr.conf\"" >> "/etc/asterisk/extensions.conf"; \
     echo "#include \"pjsip_avr.conf\"" >> "/etc/asterisk/pjsip.conf"; \
