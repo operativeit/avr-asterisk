@@ -248,7 +248,8 @@ COPY --from=builder /usr/lib/libasteriskssl.so.1 \
                     /usr/lib/
 
 RUN sed -i 's/enabled = no/enabled = yes/' /etc/asterisk/manager.conf; \
-    sed -i 's/rtpend=20000/rtpend=10050/' /etc/asterisk/rtp.conf;
+    sed -i 's/rtpend=20000/rtpend=10050/' /etc/asterisk/rtp.conf; \
+    sed -i 's/enabled = no/enabled = yes/' /etc/asterisk/prometheus.conf;
 
 RUN echo "#include \"extensions_avr.conf\"" >> "/etc/asterisk/extensions.conf"; \
     echo "#include \"pjsip_avr.conf\"" >> "/etc/asterisk/pjsip.conf"; \
