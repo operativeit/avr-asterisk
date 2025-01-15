@@ -254,9 +254,10 @@ RUN sed -i 's/enabled = no/enabled = yes/' /etc/asterisk/manager.conf; \
     sed -i 's/bindaddr=127.0.0.1/bindaddr=0.0.0.0/' /etc/asterisk/http.conf;
 
 
-RUN echo "#include \"extensions_avr.conf\"" >> "/etc/asterisk/extensions.conf"; \
-    echo "#include \"pjsip_avr.conf\"" >> "/etc/asterisk/pjsip.conf"; \
-    echo "#include \"manager_avr.conf\"" >> "/etc/asterisk/manager.conf";
+RUN echo "#include \"my_extensions.conf\"" >> "/etc/asterisk/extensions.conf"; \
+    echo "#include \"my_pjsip.conf\"" >> "/etc/asterisk/pjsip.conf"; \
+    echo "#include \"my_manager.conf\"" >> "/etc/asterisk/manager.conf"; \
+    echo "#include \"my_queues.conf\"" >> "/etc/asterisk/queues.conf";
 
 ENV TZ=Europe/Rome
 RUN set -ex; \
