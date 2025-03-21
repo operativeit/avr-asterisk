@@ -258,6 +258,7 @@ RUN echo "#include \"my_extensions.conf\"" >> "/etc/asterisk/extensions.conf"; \
     echo "#include \"my_pjsip.conf\"" >> "/etc/asterisk/pjsip.conf"; \
     echo "#include \"my_manager.conf\"" >> "/etc/asterisk/manager.conf"; \
     echo "#include \"my_queues.conf\"" >> "/etc/asterisk/queues.conf";
+    echo "#include \"my_ari.conf\"" >> "/etc/asterisk/ari.conf";
 
 ENV TZ=Europe/Rome
 RUN set -ex; \
