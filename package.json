@@ -4,6 +4,10 @@
   "description": "",
   "author": "Giuseppe Careri <info@gcareri.com> (https://gcareri.com)",
   "contributors": [],
+  "license": "MIT",
+  "scripts": {
+    "build": "docker build -t avr-asterisk:latest ."
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/agentvoiceresponse/avr-asterisk.git"

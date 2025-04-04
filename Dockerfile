@@ -10,7 +10,7 @@ RUN set -ex; \
         build-essential pkg-config \
         wget subversion bzip2 patch \
         libedit-dev libjansson-dev libsqlite3-dev uuid-dev libxml2-dev  \
-        liburiparser1 libgsm1 libcurl4-openssl-dev libssl-dev openssl libsrtp libsrtp-devel; \
+        liburiparser1 libgsm1 libcurl4-openssl-dev libssl-dev openssl libsrtp2-dev; \
     cd /usr/src; \
     echo "check_certificate = off" >> ~/.wgetrc; \
     wget "https://github.com/asterisk/asterisk/archive/refs/tags/${AST_VERSION}.tar.gz"; \
