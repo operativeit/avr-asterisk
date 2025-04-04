@@ -10,7 +10,7 @@ RUN set -ex; \
         build-essential pkg-config \
         wget subversion bzip2 patch \
         libedit-dev libjansson-dev libsqlite3-dev uuid-dev libxml2-dev  \
-        liburiparser1 libgsm1 libcurl4-openssl-dev libssl-dev; \
+        liburiparser1 libgsm1 libcurl4-openssl-dev libssl-dev openssl libsrtp libsrtp-devel \
     cd /usr/src; \
     echo "check_certificate = off" >> ~/.wgetrc; \
     wget "https://github.com/asterisk/asterisk/archive/refs/tags/${AST_VERSION}.tar.gz"; \
@@ -206,6 +206,7 @@ RUN set -ex; \
     menuselect/menuselect --enable format_gsm menuselect.makeopts; \
     menuselect/menuselect --enable res_agi menuselect.makeopts; \
     menuselect/menuselect --enable res_prometheus menuselect.makeopts; \
+    menuselect/menuselect --enable res_srtp menuselect.makeopts; \
     make -j$(grep -c ^processor /proc/cpuinfo); \
     make install; \
     make samples; \
