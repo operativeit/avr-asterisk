@@ -9,6 +9,7 @@ RUN set -ex; \
         software-properties-common \
         build-essential pkg-config \
         wget subversion bzip2 patch \
+        jq curl \
         libedit-dev libjansson-dev libsqlite3-dev uuid-dev libxml2-dev  \
         liburiparser1 libgsm1 libcurl4-openssl-dev libssl-dev openssl libsrtp2-dev libsrtp2-1; \
     cd /usr/src; \
