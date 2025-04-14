@@ -9,7 +9,6 @@ RUN set -ex; \
         software-properties-common \
         build-essential pkg-config \
         wget subversion bzip2 patch \
-        jq curl \
         libedit-dev libjansson-dev libsqlite3-dev uuid-dev libxml2-dev  \
         liburiparser1 libgsm1 libcurl4-openssl-dev libssl-dev openssl libsrtp2-dev libsrtp2-1; \
     cd /usr/src; \
@@ -223,6 +222,7 @@ RUN set -ex; \
     export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true; \
     apt-get install -y --no-install-recommends  \
        wget sox tzdata libedit2 libjansson4 libsqlite3-0 libuuid1 libxml2 uuid-runtime  \
+       jq curl \
        liburiparser1 libgsm1 libcurl4; \
     apt-get clean && rm -rf /var/lib/{apt,dpkg,cache,log};
 
