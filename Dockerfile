@@ -5,7 +5,7 @@ ENV AST_VERSION=20.9.2
 RUN set -ex; \
     apt-get update; \
     export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true; \
-    apt-get install -y --no-install-recommends \
+    apt-get install -y \
         software-properties-common \
         build-essential pkg-config \
         wget subversion bzip2 patch \
