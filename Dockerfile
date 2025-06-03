@@ -1,11 +1,11 @@
 FROM ubuntu:22.04 AS builder
 
-ENV AST_VERSION=20.9.2
+ENV AST_VERSION=22.4.0
 
 RUN set -ex; \
     apt-get update; \
     export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true; \
-    apt-get install -y \
+    apt-get install -y --no-install-recommends \
         software-properties-common \
         build-essential pkg-config \
         wget subversion bzip2 patch \
@@ -223,7 +223,7 @@ RUN set -ex; \
     apt-get install -y --no-install-recommends  \
        wget sox tzdata libedit2 libjansson4 libsqlite3-0 libuuid1 libxml2 uuid-runtime  \
        jq curl \
-       liburiparser1 libgsm1 libcurl4; \
+       liburiparser1 libgsm1 libcurl4 libsrtp2-dev libsrtp2-1; \
     apt-get clean && rm -rf /var/lib/{apt,dpkg,cache,log};
 
 COPY --from=builder /var/spool/asterisk /var/spool/asterisk
