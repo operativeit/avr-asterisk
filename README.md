@@ -151,9 +151,9 @@ exten => 6001,n,Hangup()
 If you want to build the image locally:
 
 ```bash
-git clone https://github.com/your-repo/avr-asterisk.git
+git clone https://github.com/operativeit/avr-asterisk.git
 cd avr-asterisk
-docker build -t agentvoiceresponse/avr-asterisk:latest .
+docker build -t operativeit/avr-asterisk:latest .
 ```
 
 ## Todo 
