@@ -11,20 +11,19 @@ This is a lightweight Asterisk 20.9.2 Docker image optimized for VoIP applicatio
 - Prometheus metrics enabled
 - Minimal footprint with only essential modules
 - Timezone set to Europe/Rome by default
+- G722 codec
+- ChanSpy
+- Confbridge
+- ODBC support
+- Ping utils
+- Include extensions.d/* into extensions.conf for modularity
+- Share agi-bin, bin and sounds directories
 
 ## Quick Start
 
 ### Using Docker
 
-```bash
-docker run -d \
-  --name asterisk \
-  -p 5038:5038 \
-  -p 8088:8088 \
-  -p 10000-20000:10000-20000/udp \
-  -v /path/to/your/config:/etc/asterisk \
-  agentvoiceresponse/avr-asterisk:latest
-```
+Due too database dependency, it's easier to use "Docker compose" instead
 
 ### Using Docker Compose
 
@@ -35,13 +34,58 @@ services:
   asterisk:
     image: agentvoiceresponse/avr-asterisk:latest
     container_name: asterisk
+    environment:
+      - MYSQL_HOST=${DATABASE_ASTERISK_HOST:-avr-asterisk-db}
+      - MYSQL_PORT=${DATABASE_ASTERISK_PORT:-3306}
+      - MYSQL_DATABASE=${DATABASE_ASTERISK_NAME:-asterisk}
+      - MYSQL_USER=${DATABASE_ASTERISK_USERNAME:-asterisk}
+      - MYSQL_PASSWORD=${DATABASE_ASTERISK_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${DATABASE_ROOT_PASSWORD}
     ports:
-      - "5038:5038"  # Manager API
-      - "8088:8088"  # HTTP API
-      - "10000-20000:10000-20000/udp"  # RTP ports
+      - 5038:5038
+      - target: 5060
+        published: 5060
+        protocol: tcp
+      - target: 5060
+        published: 5060
+        protocol: udp
+      - 10000-10050:10000-10050/udp
+      - 8088:8088
     volumes:
-      - ./config:/etc/asterisk
+      - ./asterisk/conf/manager.conf:/etc/asterisk/my_manager.conf
+      - ./asterisk/conf/pjsip.conf:/etc/asterisk/my_pjsip.conf
+      - ./asterisk/conf/extensions.conf:/etc/asterisk/my_extensions.conf
+      - ./asterisk/conf/queues.conf:/etc/asterisk/my_queues.conf
+      - ./asterisk/conf/ari.conf:/etc/asterisk/my_ari.conf
+      - ./asterisk/conf/extensions.d:/etc/asterisk/extensions.d
+      - ./asterisk/sounds:/var/lib/asterisk/sounds/avr
+      - ./asterisk/agi-bin:/var/lib/asterisk/agi-bin/avr
+      - ./asterisk/bin:/usr/local/bin/avr
     restart: unless-stopped
+
+  avr-asterisk-db:
+    image: mysql:8.0.15
+    platform: linux/x86_64
+    container_name: avr-asterisk-db
+    command: mysqld --default-authentication-plugin=mysql_native_password
+    restart: always
+    environment:
+      - MYSQL_DATABASE=${DATABASE_ASTERISK_NAME:-asterisk}
+      - MYSQL_USER=${DATABASE_ASTERISK_USERNAME:-asterisk}
+      - MYSQL_PASSWORD=${DATABASE_ASTERISK_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${DATABASE_ROOT_PASSWORD}
+    ports:
+      - 3309:3306
+    volumes:
+      - ./db:/var/lib/mysql
+      - ./init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "mysqladmin" ,"ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+    networks:
+      - avr
+
 ```
 
 ## Configuration

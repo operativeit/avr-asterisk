@@ -1,0 +1,11 @@
+#!/bin/bash
+
+DIR="/var/spool/asterisk/monitor/avr"
+
+if [ -d "$DIR" ]; then
+  find "$DIR" -type f -name "*.wav" -mtime +0 -exec rm -f {} \;
+  echo "Recording deleted successfully."
+else
+  echo "Error: Directory $DIR does not exist."
+  exit 1
+fi

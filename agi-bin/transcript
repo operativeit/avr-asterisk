@@ -1,0 +1,33 @@
+#!/bin/bash
+
+exec 2>>/tmp/agi_debug.log
+echo "AGI script started" >&2
+
+while read VAR && [ "$VAR" != "" ]; do
+    echo "$VAR" >&2
+done
+
+echo "GET VARIABLE UUID"
+read RESPONSE
+
+uuid=$(echo "$RESPONSE" | cut -d'(' -f2 | cut -d')' -f1)
+
+echo "UUID: ${uuid}" >&2
+
+
+filename="/var/spool/asterisk/monitor/${uuid}.wav"
+base64=$(base64 "${filename}" --wrap 0)
+
+echo "{\"uuid\": \"${uuid}\", \"base64\": \"${base64}\"}" > /tmp/${uuid}.json
+
+output=$(wget -q -O- --post-file /tmp/${uuid}.json \
+  "http://172.20.0.1:9001/transcript" \
+  --header "Content-Type: application/json" \
+  --no-check-certificate)
+
+rm /tmp/${uuid}.json
+
+echo "VERBOSE \"transcripted: ${uuid}\" 1"
+
+
+exit 0

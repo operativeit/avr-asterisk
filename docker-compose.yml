@@ -1,0 +1,66 @@
+services:
+  avr-asterisk-db:
+    image: mysql:8.0.15
+    platform: linux/x86_64
+    container_name: avr-asterisk-db
+    command: mysqld --default-authentication-plugin=mysql_native_password
+    restart: always
+    environment:
+      - MYSQL_DATABASE=${DATABASE_ASTERISK_NAME:-asterisk}
+      - MYSQL_USER=${DATABASE_ASTERISK_USERNAME:-asterisk}
+      - MYSQL_PASSWORD=${DATABASE_ASTERISK_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${DATABASE_ROOT_PASSWORD}
+    ports:
+      - 3309:3306
+    volumes:
+      - ./db:/var/lib/mysql
+      - ./init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "mysqladmin" ,"ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+    networks:
+      - avr
+
+  avr-asterisk:
+    image: agentvoiceresponse/avr-asterisk
+    platform: linux/x86_64
+    container_name: avr-asterisk
+    restart: always
+    environment:
+      - MYSQL_HOST=${DATABASE_ASTERISK_HOST:-avr-asterisk-db}
+      - MYSQL_PORT=${DATABASE_ASTERISK_PORT:-3306}
+      - MYSQL_DATABASE=${DATABASE_ASTERISK_NAME:-asterisk}
+      - MYSQL_USER=${DATABASE_ASTERISK_USERNAME:-asterisk}
+      - MYSQL_PASSWORD=${DATABASE_ASTERISK_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${DATABASE_ROOT_PASSWORD}
+    ports:
+      - 5038:5038
+      - target: 5060
+        published: 5060
+        protocol: tcp
+      - target: 5060
+        published: 5060
+        protocol: udp
+      - 10000-10050:10000-10050/udp
+      - 8088:8088
+    volumes:
+      - ./conf/manager.conf:/etc/asterisk/my_manager.conf
+      - ./conf/pjsip.conf:/etc/asterisk/my_pjsip.conf
+      - ./conf/extensions.conf:/etc/asterisk/my_extensions.conf
+      - ./conf/queues.conf:/etc/asterisk/my_queues.conf
+      - ./conf/ari.conf:/etc/asterisk/my_ari.conf
+      - ./conf/extensions.d:/etc/asterisk/extensions.d
+      - ./sounds:/var/lib/asterisk/sounds/avr
+      - ./agi-bin:/var/lib/asterisk/agi-bin/avr
+      - ./bin:/usr/local/bin/avr
+    networks:
+      - avr
+
+networks:
+  avr:
+    name: avr
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
