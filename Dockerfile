@@ -6,6 +6,7 @@ RUN set -ex; \
     apt-get update; \
     export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true; \
     apt-get install -y --no-install-recommends \
+        default-libmysqlclient-dev unixodbc unixodbc-dev odbcinst libodbc1 odbc-mariadb \
         software-properties-common \
         build-essential pkg-config \
         wget subversion bzip2 patch \
@@ -26,11 +27,11 @@ RUN set -ex; \
     menuselect/menuselect --disable app_getcpeid menuselect.makeopts; \
     menuselect/menuselect --disable app_celgenuserevent menuselect.makeopts; \
     echo ">>DISABLE cdr and db/sql modules/apps"; \
-    menuselect/menuselect --disable app_cdr menuselect.makeopts; \
+    #menuselect/menuselect --disable app_cdr menuselect.makeopts; \
     menuselect/menuselect --disable app_db menuselect.makeopts; \
     menuselect/menuselect --disable cdr_adaptive_odbc menuselect.makeopts; \
     menuselect/menuselect --disable cdr_pgsql menuselect.makeopts; \
-    menuselect/menuselect --disable cdr_odbc menuselect.makeopts; \
+    #menuselect/menuselect --disable cdr_odbc menuselect.makeopts; \
     menuselect/menuselect --disable cdr_tds menuselect.makeopts; \
     menuselect/menuselect --disable cdr_sqlite3_custom menuselect.makeopts; \
     menuselect/menuselect --disable func_cdr menuselect.makeopts; \
@@ -40,9 +41,9 @@ RUN set -ex; \
     menuselect/menuselect --disable cdr_radius menuselect.makeopts; \
     menuselect/menuselect --disable cdr_manager menuselect.makeopts; \
     menuselect/menuselect --disable func_odbc menuselect.makeopts; \
-    menuselect/menuselect --disable res_config_odbc menuselect.makeopts; \
-    menuselect/menuselect --disable res_odbc menuselect.makeopts; \
-    menuselect/menuselect --disable res_odbc_transaction menuselect.makeopts; \
+    #menuselect/menuselect --disable res_config_odbc menuselect.makeopts; \
+    #menuselect/menuselect --disable res_odbc menuselect.makeopts; \
+    #menuselect/menuselect --disable res_odbc_transaction menuselect.makeopts; \
     menuselect/menuselect --disable cel_odbc menuselect.makeopts; \
     menuselect/menuselect --disable cel_pgsql menuselect.makeopts; \
     menuselect/menuselect --disable cel_tds menuselect.makeopts; \
@@ -51,10 +52,9 @@ RUN set -ex; \
     menuselect/menuselect --disable res_config_sqlite3 menuselect.makeopts; \
     menuselect/menuselect --disable res_config_pgsql menuselect.makeopts; \
     menuselect/menuselect --disable func_db menuselect.makeopts; \
-    menuselect/menuselect --disable pbx_realtime menuselect.makeopts; \
+    #menuselect/menuselect --disable pbx_realtime menuselect.makeopts; \
     echo ">>DISABLE unused codec"; \
     menuselect/menuselect --disable codec_g726 menuselect.makeopts; \
-    menuselect/menuselect --disable codec_g722 menuselect.makeopts; \
     menuselect/menuselect --disable codec_adpcm menuselect.makeopts; \
     menuselect/menuselect --disable codec_a_mu menuselect.makeopts; \
     menuselect/menuselect --disable codec_ilbc menuselect.makeopts; \
@@ -64,7 +64,6 @@ RUN set -ex; \
     menuselect/menuselect --disable format_h263 menuselect.makeopts; \
     menuselect/menuselect --disable format_g726 menuselect.makeopts; \
     menuselect/menuselect --disable format_g723 menuselect.makeopts; \
-    menuselect/menuselect --disable codec_g729a menuselect.makeopts; \
     menuselect/menuselect --disable format_ogg_vorbis menuselect.makeopts; \
     menuselect/menuselect --disable res_format_attr_celt menuselect.makeopts; \
     menuselect/menuselect --disable res_format_attr_h263 menuselect.makeopts; \
@@ -98,7 +97,7 @@ RUN set -ex; \
     menuselect/menuselect --disable res_resolver_unbound menuselect.makeopts; \
     menuselect/menuselect --disable res_statsd menuselect.makeopts; \
     menuselect/menuselect --disable res_stun_monitor menuselect.makeopts; \
-    menuselect/menuselect --disable res_sorcery_realtime menuselect.makeopts; \
+    #menuselect/menuselect --disable res_sorcery_realtime menuselect.makeopts; \
     menuselect/menuselect --disable res_hep menuselect.makeopts; \
     menuselect/menuselect --disable res_hep_rtcp menuselect.makeopts; \
     menuselect/menuselect --disable res_hep_pjsip menuselect.makeopts; \
@@ -125,13 +124,13 @@ RUN set -ex; \
     menuselect/menuselect --disable func_presencestate menuselect.makeopts; \
     menuselect/menuselect --disable func_math menuselect.makeopts; \
     menuselect/menuselect --disable func_periodic_hook menuselect.makeopts; \
-    menuselect/menuselect --disable app_confbridge menuselect.makeopts; \
+    #menuselect/menuselect --disable app_confbridge menuselect.makeopts; \
     menuselect/menuselect --disable app_zapateller menuselect.makeopts; \
-    menuselect/menuselect --disable app_voicemail menuselect.makeopts; \
+    #menuselect/menuselect --disable app_voicemail menuselect.makeopts; \
     menuselect/menuselect --disable app_minivm menuselect.makeopts; \
     menuselect/menuselect --disable app_agent_pool menuselect.makeopts; \
     menuselect/menuselect --disable app_followme menuselect.makeopts; \
-    menuselect/menuselect --disable app_chanspy menuselect.makeopts; \
+    #menuselect/menuselect --disable app_chanspy menuselect.makeopts; \
     menuselect/menuselect --disable app_jack menuselect.makeopts; \
     menuselect/menuselect --disable app_sms menuselect.makeopts; \
     menuselect/menuselect --disable app_directory menuselect.makeopts; \
@@ -222,7 +221,8 @@ RUN set -ex; \
     export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true; \
     apt-get install -y --no-install-recommends  \
        wget sox tzdata libedit2 libjansson4 libsqlite3-0 libuuid1 libxml2 uuid-runtime  \
-       jq curl \
+       jq curl iputils-ping \
+       unixodbc odbcinst libodbc1 odbc-mariadb \
        liburiparser1 libgsm1 libcurl4 libcurl4-openssl-dev libssl-dev openssl libsrtp2-dev libsrtp2-1; \
     apt-get clean && rm -rf /var/lib/{apt,dpkg,cache,log};
 
@@ -255,8 +255,8 @@ RUN sed -i 's/enabled = no/enabled = yes/' /etc/asterisk/manager.conf; \
     sed -i 's/;enabled=yes/enabled=yes/' /etc/asterisk/http.conf; \
     sed -i 's/bindaddr=127.0.0.1/bindaddr=0.0.0.0/' /etc/asterisk/http.conf;
 
-
 RUN echo "#include \"my_extensions.conf\"" >> "/etc/asterisk/extensions.conf"; \
+    echo "#include \"extensions.d/*.conf\"" >> "/etc/asterisk/extensions.conf"; \
     echo "#include \"my_pjsip.conf\"" >> "/etc/asterisk/pjsip.conf"; \
     echo "#include \"my_manager.conf\"" >> "/etc/asterisk/manager.conf"; \
     echo "#include \"my_queues.conf\"" >> "/etc/asterisk/queues.conf"; \
@@ -266,6 +266,19 @@ ENV TZ=Europe/Rome
 RUN set -ex; \
     echo $TZ > /etc/timezone; \
     ln -snf /usr/share/zoneinfo/$TZ /etc/localtime;
+
+COPY conf/odbcinst.ini /etc/odbcinst.ini
+COPY conf/extconfig.conf /etc/asterisk/extconfig.conf
+COPY conf/cdr_adaptive_odbc.conf /etc/asterisk/cdr_adaptive_odbc.conf
+COPY conf/sorcery.conf /etc/asterisk/sorcery.conf
+COPY conf/modules.conf /etc/asterisk/modules.conf
+
+COPY entrypoint.sh /entrypoint.sh
+
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+
 
 # if need curl for Global Web
 # RUN set -ex; \

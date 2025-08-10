@@ -1,9 +1,11 @@
 {
   "name": "avr-asterisk",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "description": "",
   "author": "Giuseppe Careri <info@gcareri.com> (https://gcareri.com)",
-  "contributors": [],
+  "contributors": [
+     "Sebastien Cramatte <oss@operativeit.es> https://operativeit.es"
+  ],
   "license": "MIT",
   "scripts": {
     "build": "docker build -t avr-asterisk:latest ."
