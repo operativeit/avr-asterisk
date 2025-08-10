@@ -15,7 +15,7 @@ This is a lightweight Asterisk 20.9.2 Docker image optimized for VoIP applicatio
 - ChanSpy
 - Confbridge
 - ODBC support
-- Ping utils
+- ping, curl, jq, wget  utils
 - Include extensions.d/* into extensions.conf for modularity
 - Share agi-bin, bin and sounds directories
 
@@ -155,3 +155,10 @@ git clone https://github.com/your-repo/avr-asterisk.git
 cd avr-asterisk
 docker build -t agentvoiceresponse/avr-asterisk:latest .
 ```
+
+## Todo 
+
+- Add support for PHP or node agi-bin 
+- Add some config examples for conference , chanspy, queues
+- Create an UI to setup extensions, trunks, queues ...
+
