@@ -52,15 +52,15 @@ services:
       - 10000-10050:10000-10050/udp
       - 8088:8088
     volumes:
-      - ./asterisk/conf/manager.conf:/etc/asterisk/my_manager.conf
-      - ./asterisk/conf/pjsip.conf:/etc/asterisk/my_pjsip.conf
-      - ./asterisk/conf/extensions.conf:/etc/asterisk/my_extensions.conf
-      - ./asterisk/conf/queues.conf:/etc/asterisk/my_queues.conf
-      - ./asterisk/conf/ari.conf:/etc/asterisk/my_ari.conf
-      - ./asterisk/conf/extensions.d:/etc/asterisk/extensions.d
-      - ./asterisk/sounds:/var/lib/asterisk/sounds/avr
-      - ./asterisk/agi-bin:/var/lib/asterisk/agi-bin/avr
-      - ./asterisk/bin:/usr/local/bin/avr
+      - ./conf/manager.conf:/etc/asterisk/my_manager.conf
+      - ./conf/pjsip.conf:/etc/asterisk/my_pjsip.conf
+      - ./conf/extensions.conf:/etc/asterisk/my_extensions.conf
+      - ./conf/queues.conf:/etc/asterisk/my_queues.conf
+      - ./conf/ari.conf:/etc/asterisk/my_ari.conf
+      - ./conf/extensions.d:/etc/asterisk/extensions.d
+      - ./sounds:/var/lib/asterisk/sounds/avr
+      - ./agi-bin:/var/lib/asterisk/agi-bin/avr
+      - ./bin:/usr/local/bin/avr
     restart: unless-stopped
 
   avr-asterisk-db:
