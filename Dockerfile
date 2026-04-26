@@ -221,11 +221,22 @@ FROM ubuntu:22.04
 RUN set -ex; \
     apt-get update; \
     export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true; \
+    apt-get install -y --no-install-recommends \
+      ca-certificates curl gnupg lsb-release; \
+    mkdir -p /etc/apt/keyrings; \
+    curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x4f4ea0aae5267a6c" \
+      | gpg --dearmor -o /etc/apt/keyrings/ondrej-php.gpg; \
+    echo "deb [signed-by=/etc/apt/keyrings/ondrej-php.gpg] https://ppa.launchpadcontent.net/ondrej/php/ubuntu jammy main" \
+      > /etc/apt/sources.list.d/ondrej-php.list; \
+    apt-get update; \
     apt-get install -y --no-install-recommends  \
        wget sox tzdata libedit2 libjansson4 libsqlite3-0 libuuid1 libxml2 uuid-runtime  \
        jq curl iputils-ping \
        unixodbc odbcinst libodbc1 odbc-mariadb \
-       liburiparser1 libgsm1 libcurl4 libcurl4-openssl-dev libssl-dev openssl libsrtp2-dev libsrtp2-1; \
+       liburiparser1 libgsm1 libcurl4 libcurl4-openssl-dev libssl-dev openssl libsrtp2-dev libsrtp2-1 \
+       php8.5-cli php8.5-common php8.5-mbstring php8.5-xml php8.5-soap php8.5-mysql php8.5-pgsql php8.5-redis \
+       php8.5-curl php8.5-zip php8.5-intl php8.5-bcmath php8.5-readline; \
+    update-alternatives --set php /usr/bin/php8.5; \
     apt-get clean && rm -rf /var/lib/{apt,dpkg,cache,log};
 
 COPY --from=builder /var/spool/asterisk /var/spool/asterisk
