@@ -1,6 +1,6 @@
 FROM ubuntu:22.04 AS builder
 
-ENV AST_VERSION=22.4.0
+ENV AST_VERSION=23.1.0
 
 RUN set -ex; \
     apt-get update; \
@@ -11,7 +11,7 @@ RUN set -ex; \
         build-essential pkg-config \
         wget subversion bzip2 patch \
         libedit-dev libjansson-dev libsqlite3-dev uuid-dev libxml2-dev  \
-        liburiparser1 libgsm1 libcurl4-openssl-dev libssl-dev openssl libsrtp2-dev libsrtp2-1 \
+        liburiparser1 libgsm1 libcurl4-openssl-dev libssl-dev openssl libsrtp2-dev libsrtp2-1 libspeex-dev libspeexdsp-dev \
         libopus-dev xmlstarlet; \
     cd /usr/src; \
     echo "check_certificate = off" >> ~/.wgetrc; \
@@ -35,7 +35,7 @@ RUN set -ex; \
     #menuselect/menuselect --disable cdr_odbc menuselect.makeopts; \
     menuselect/menuselect --disable cdr_tds menuselect.makeopts; \
     menuselect/menuselect --disable cdr_sqlite3_custom menuselect.makeopts; \
-    menuselect/menuselect --disable func_cdr menuselect.makeopts; \
+    #menuselect/menuselect --disable func_cdr menuselect.makeopts; \
     menuselect/menuselect --disable cdr_csv menuselect.makeopts; \
     menuselect/menuselect --disable app_forkcdr menuselect.makeopts; \
     menuselect/menuselect --disable cdr_custom menuselect.makeopts; \
@@ -60,7 +60,7 @@ RUN set -ex; \
     menuselect/menuselect --disable codec_a_mu menuselect.makeopts; \
     menuselect/menuselect --disable codec_ilbc menuselect.makeopts; \
     menuselect/menuselect --disable codec_lpc10 menuselect.makeopts; \
-    menuselect/menuselect --disable codec_speex menuselect.makeopts; \
+    #menuselect/menuselect --disable codec_speex menuselect.makeopts; \
     menuselect/menuselect --disable format_h264 menuselect.makeopts; \
     menuselect/menuselect --disable format_h263 menuselect.makeopts; \
     menuselect/menuselect --disable format_g726 menuselect.makeopts; \
@@ -201,6 +201,7 @@ RUN set -ex; \
     menuselect/menuselect --enable func_pjsip_endpoint menuselect.makeopts; \
     menuselect/menuselect --enable func_pjsip_contact menuselect.makeopts; \
     menuselect/menuselect --enable func_pjsip_aor menuselect.makeopts; \
+    menuselect/menuselect --enable func_speex menuselect.makeopts; \
     menuselect/menuselect --enable chan_audiosocket menuselect.makeopts; \
     menuselect/menuselect --enable codec_opus menuselect.makeopts; \
     menuselect/menuselect --enable codec_gsm menuselect.makeopts; \
@@ -212,6 +213,9 @@ RUN set -ex; \
     make install; \
     make samples; \
     make config; \
+    mkdir -p /etc/asterisk/keys; \
+    ./contrib/scripts/ast_tls_cert -C agentvoiceresponse.local -O "Agent Voice Response" -d /etc/asterisk/keys -e; \
+    ./contrib/scripts/ast_tls_cert -m client -c /etc/asterisk/keys/ca.crt -k /etc/asterisk/keys/ca.key -d /etc/asterisk/crt -e; \
     apt-get remove -y --purge --auto-remove build-essential software-properties-common lib*dev; \
     apt-get clean && rm -rf /var/lib/{apt,dpkg,cache,log}; \
     rm -rf /usr/src/${AST_VERSION}* && rm -rf /usr/src/asterisk*;
@@ -233,7 +237,7 @@ RUN set -ex; \
        wget sox tzdata libedit2 libjansson4 libsqlite3-0 libuuid1 libxml2 uuid-runtime  \
        jq curl iputils-ping \
        unixodbc odbcinst libodbc1 odbc-mariadb \
-       liburiparser1 libgsm1 libcurl4 libcurl4-openssl-dev libssl-dev openssl libsrtp2-dev libsrtp2-1 \
+       liburiparser1 libgsm1 libcurl4 libcurl4-openssl-dev libssl-dev openssl libsrtp2-dev libsrtp2-1 libspeex-dev libspeexdsp-dev \
        php8.5-cli php8.5-common php8.5-mbstring php8.5-xml php8.5-soap php8.5-mysql php8.5-pgsql php8.5-redis \
        php8.5-curl php8.5-zip php8.5-intl php8.5-bcmath php8.5-readline; \
     update-alternatives --set php /usr/bin/php8.5; \
@@ -246,8 +250,8 @@ COPY --from=builder /usr/lib/asterisk /usr/lib/asterisk
 COPY --from=builder /etc/asterisk /etc/asterisk
 
 COPY --from=builder /usr/sbin/astcanary \
-                    /usr/sbin/astdb2bdb \
-                    /usr/sbin/astdb2sqlite3 \
+                    #/usr/sbin/astdb2bdb \
+                    #/usr/sbin/astdb2sqlite3 \
                     /usr/sbin/asterisk \
                     /usr/sbin/astgenkey \
                     /usr/sbin/astversion \
@@ -264,9 +268,14 @@ COPY --from=builder /usr/lib/libasteriskssl.so.1 \
 
 RUN sed -i 's/enabled = no/enabled = yes/' /etc/asterisk/manager.conf; \
     sed -i 's/rtpend=20000/rtpend=10050/' /etc/asterisk/rtp.conf; \
+    sed -i 's/; stunaddr=/stunaddr=stun.l.google.com:19302/' /etc/asterisk/rtp.conf; \
     sed -i 's/enabled = no/enabled = yes/' /etc/asterisk/prometheus.conf; \
     sed -i 's/;enabled=yes/enabled=yes/' /etc/asterisk/http.conf; \
-    sed -i 's/bindaddr=127.0.0.1/bindaddr=0.0.0.0/' /etc/asterisk/http.conf;
+    sed -i 's/bindaddr=127.0.0.1/bindaddr=0.0.0.0/' /etc/asterisk/http.conf; \
+    sed -i 's/;tlsenable=yes/tlsenable=yes/' /etc/asterisk/http.conf; \
+    sed -i 's/;tlsbindaddr=0.0.0.0:8089/tlsbindaddr=0.0.0.0:8089/' /etc/asterisk/http.conf; \
+    sed -i 's/;tlscertfile=<\/path\/to\/certificate.pem>/tlscertfile=\/etc\/asterisk\/keys\/asterisk.crt/' /etc/asterisk/http.conf; \
+    sed -i 's/;tlsprivatekey=<\/path\/to\/private.pem>/tlsprivatekey=\/etc\/asterisk\/keys\/asterisk.key/' /etc/asterisk/http.conf; 
 
 RUN echo "#include \"my_extensions.conf\"" >> "/etc/asterisk/extensions.conf"; \
     echo "#include \"extensions.d/*.conf\"" >> "/etc/asterisk/extensions.conf"; \
