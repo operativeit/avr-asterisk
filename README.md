@@ -114,37 +114,51 @@ You can override these configurations by mounting your own configuration files t
 
 ### pjsip.conf
 ```ini
-[transport-udp]
+[transport-tcp]
 type=transport
-protocol=udp
+protocol=tcp
 bind=0.0.0.0:5060
+external_media_address=127.0.0.1
+external_signaling_address=127.0.0.1
+external_signaling_port=5060
+local_net=127.0.0.1/32
 
-[6001]
+[endpoint-template](!)
 type=endpoint
-context=from-internal
+transport=transport-tcp
+context=demo
 disallow=all
+allow=gsm
 allow=ulaw
-allow=alaw
-auth=6001
-aors=6001
+direct_media=no
+force_rport=no
+rewrite_contact=yes
+rtp_symmetric=yes
 
-[6001]
+[1000](endpoint-template)
+auth=1000
+aors=1000
+
+[1000]
 type=auth
 auth_type=userpass
-password=your_password
-username=6001
+password=1000
+username=1000
 
-[6001]
-type=aors
-max_contacts=1
+[1000]
+type=aor
+max_contacts=10
 ```
 
 ### extensions.conf
 ```ini
-[from-internal]
-exten => 6001,1,Answer()
-exten => 6001,n,Echo()
-exten => 6001,n,Hangup()
+[avr]
+exten => s,1,Ringing
+ same => n,Wait(1)
+ same => n,Answer()
+ same => n,Set(UUID=${SHELL(uuidgen | tr -d '\n')})
+ same => n,AudioSocket(${UUID},${ARG1})
+ same => n,Hangup()
 ```
 
 ## Building from Source
@@ -158,8 +172,6 @@ docker build -t operativeit/avr-asterisk:latest .
 ```
 
 ## Todo 
-
-- Add support for PHP or node agi-bin 
 - Add some config examples for conference , chanspy, queues
 - Create an UI to setup extensions, trunks, queues ...
 
