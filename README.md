@@ -109,6 +109,7 @@ You can override these configurations by mounting your own configuration files t
 ## Environment Variables
 
 - `TZ`: Timezone (default: Europe/Rome)
+- `ASTERISK_COUNTRY`: Default country for indication tones (dial, busy, ring...) in `indications.conf`, as a two-letter code such as `es`, `fr` or `it` (default: `us`). Unknown codes are ignored with a warning.
 
 ## Example Configuration Files
 
