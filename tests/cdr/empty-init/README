@@ -1,0 +1,1 @@
+Intentionally empty. run.sh mounts a database with an unpartitioned cdr table here to test the conversion.

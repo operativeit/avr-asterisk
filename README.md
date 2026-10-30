@@ -133,6 +133,47 @@ A database created before migrations existed already has the realtime schema: `0
 
 Demo data (endpoints `1000`/`1001`, a trunk, a queue) is in `db/seed/demo.sql`; it is not applied automatically.
 
+### CDR and recordings: partitions, archive and retention
+
+`cdr` and `recordings` (and their `cdr_archives` / `recordings_archives`) have **one partition per day** (`pYYYYMMDD`), so a query on a day reads one partition and a query on a month about 30. The primary key starts with the date (`(calldate, id)`, `(created_at, id)`), which keeps each day's rows together; the other indexes end with the date (`src`, `dst`, `accountcode` for CDRs; `caller`, `destination`, the processing statuses for recordings) to answer "this number / status in this period". Filter by date whenever you can: indexes are per partition, so a lookup without a date (for example by `uniqueid` alone) checks every partition.
+
+Every table also has two fixed partitions: `pmax` catches rows dated beyond the existing partitions (an insert never fails, and they move to their day when it is created), and `pmin` stays empty (MySQL always adds the first partition to range queries, so it costs nothing).
+
+| | CDRs | Recordings |
+|---|---|---|
+| Main table keeps | the current calendar year | the current month and the previous `hot_months` (default 1) |
+| Archived | whole past years, on 1 January | older months, every day |
+| Dropped from the archive | years older than `retention_years` (default 4) | months older than `retention_months` (default 12) |
+| Settings | `cdr.cdr_settings` | `recordings.recordings_settings` |
+
+Six MySQL events do this (the event scheduler must be on: `--event-scheduler=ON`, the MySQL 8 default):
+
+| Event | When | What |
+|---|---|---|
+| `cdr_create_partitions` / `recordings_create_partitions` | 15 December, 03:00 | Next year's day partitions |
+| `cdr_archive` / `recordings_archive` | daily, 03:00 | Moves the due days to the archive with `EXCHANGE PARTITION` (no row copy) |
+| `cdr_purge` / `recordings_purge` | daily, 03:30 | `DROP PARTITION` of archive days beyond retention: rows and partitions go together |
+
+```sql
+-- Retention (takes effect at the next run, 03:30)
+UPDATE cdr.cdr_settings SET retention_years = 5;
+UPDATE recordings.recordings_settings SET hot_months = 2, retention_months = 6;
+
+-- Partitions of a table, with their row estimates
+SELECT partition_name, table_rows FROM information_schema.partitions
+ WHERE table_schema = 'cdr' AND table_name = 'cdr' ORDER BY partition_ordinal_position;
+
+-- The events and when they last ran
+SELECT event_schema, event_name, status, last_executed FROM information_schema.events;
+```
+
+- **Late rows** (a CDR of 31 December written after midnight, a recording of an archived month) still insert: they land in the main table's first day partition and reach their own day in the archive at the next archiving.
+- **`recordings.uuid`** is unique together with `created_at` (MySQL requires the partitioning column in every unique key). Writers must give a recording a fixed `created_at` per call, so that a retry hits the key and `ON DUPLICATE KEY UPDATE` applies; elokia-infra's `save_recording.php` uses the call start.
+- Recording partitions are on `UNIX_TIMESTAMP(created_at)`: day boundaries follow the MySQL server time zone when they are created, so do not change it afterwards.
+- On a database created before 0006/0007, existing rows are moved once to their final place (main table or archive); rows already older than the retention period are not kept.
+
+`tests/cdr/run.sh` and `tests/recordings/run.sh` simulate the calendar (partition creation, archiving, late rows, purge, settings, and the conversion of existing tables).
+
 ### Provisioning accounts, trunks and DDIs
 
 Triggers on the `provision` database write the realtime rows, so an account works right after its `INSERT`, without a reload:

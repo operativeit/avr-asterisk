@@ -58,7 +58,7 @@ wait_ready() {
 
 section "Migrations applied by the entrypoint (empty database)"
 check "Asterisk started and connected to the database" wait_ready
-check "all migrations recorded" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
+check "all migrations recorded" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
 check "databases cdr, recordings and provision exist" grep -qx 3 <(root -e "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name IN ('cdr','recordings','provision')")
 check "no cdr or recordings table left in asterisk" grep -qx 0 <(root -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='asterisk' AND table_name IN ('cdr','recordings')")
 check "cdr ODBC connection up" grep -q "active connections: 1" <(ast "odbc show cdr")
@@ -193,7 +193,7 @@ root_old_schema="$PWD/work/old-init"
 OLD_SCHEMA_DIR="$root_old_schema" "${DC[@]}" up -d avr-asterisk-db avr-asterisk >work/up-old.log 2>&1 || { cat work/up-old.log; exit 1; }
 check "Asterisk started on the old database" wait_ready
 check "0001 recorded as already applied" grep -q "existing database: recording 0001-asterisk.sql as applied" <("${DC[@]}" logs --no-log-prefix avr-asterisk 2>&1)
-check "0002-0005 applied on top" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
+check "0002-0007 applied on top" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
 sql provision -e "INSERT INTO accounts (name, type, password) VALUES ('3001', 'local', 'p3001')" >/dev/null
 check "provision works on the old database" grep -qx 1 <(sql asterisk -e "SELECT COUNT(*) FROM ps_endpoints WHERE id='3001'")
 
