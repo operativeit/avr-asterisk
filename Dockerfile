@@ -290,6 +290,7 @@ RUN set -ex; \
     ln -snf /usr/share/zoneinfo/$TZ /etc/localtime;
 
 COPY conf/odbcinst.ini /etc/odbcinst.ini
+RUN sed -i "s#/usr/lib/x86_64-linux-gnu/odbc/libmaodbc.so#$(ls /usr/lib/*-linux-gnu/odbc/libmaodbc.so)#" /etc/odbcinst.ini
 COPY conf/extconfig.conf /etc/asterisk/extconfig.conf
 COPY conf/cdr_adaptive_odbc.conf /etc/asterisk/cdr_adaptive_odbc.conf
 COPY conf/sorcery.conf /etc/asterisk/sorcery.conf
