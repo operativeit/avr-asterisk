@@ -22,8 +22,10 @@ check() { local desc="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$desc"; else
 section() { printf '\n== %s\n' "$1"; }
 
 # As the application user, so the provision grants are tested too.
-sql()  { "${DC[@]}" exec -T avr-asterisk-db sh -c 'MYSQL_PWD=testpass exec mysql -uasterisk -N "$@"' sh "$@" 2>&1; }
-root() { "${DC[@]}" exec -T avr-asterisk-db sh -c 'MYSQL_PWD=testroot exec mysql -uroot -N "$@"' sh "$@" 2>&1; }
+sql()  { "${DC[@]}" exec -T avr-asterisk-db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" exec mysql -uasterisk -N "$@"' sh "$@" 2>&1; }
+root() { "${DC[@]}" exec -T avr-asterisk-db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -N "$@"' sh "$@" 2>&1; }
+# 16 chars from the allowed alphabet, with a lowercase, uppercase, digit and symbol.
+strong_password() { grep -qE '^[A-Za-z0-9!%*+.^_~-]{16}$' <<<"$1" && grep -q '[a-z]' <<<"$1" && grep -q '[A-Z]' <<<"$1" && grep -q '[0-9]' <<<"$1" && grep -q '[!%*+.^_~-]' <<<"$1"; }
 ast()  { "${DC[@]}" exec -T "${2:-avr-asterisk}" asterisk -rx "$1" 2>&1; }
 # Errors make mysql exit 1, so match on the captured output, not the pipeline.
 rejects() { local out; out="$(sql provision -e "$1")"; grep -q "$2" <<<"$out"; }
@@ -56,7 +58,7 @@ wait_ready() {
 
 section "Migrations applied by the entrypoint (empty database)"
 check "Asterisk started and connected to the database" wait_ready
-check "all four migrations recorded" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
+check "all migrations recorded" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
 check "databases cdr, recordings and provision exist" grep -qx 3 <(root -e "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name IN ('cdr','recordings','provision')")
 check "no cdr or recordings table left in asterisk" grep -qx 0 <(root -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='asterisk' AND table_name IN ('cdr','recordings')")
 check "cdr ODBC connection up" grep -q "active connections: 1" <(ast "odbc show cdr")
@@ -81,7 +83,13 @@ section "Local accounts (no reload)"
 sql provision -e "INSERT INTO accounts (name, type, password) VALUES ('2001', 'local', 'phonepass2001');
                   INSERT INTO accounts (name, type, password, transports) VALUES ('2002', 'local', 'phonepass2002', 'tcp');
                   INSERT INTO accounts (name, type, transports, callerid) VALUES ('2003', 'local', 'udp,wss', 'Ana <2003>');" >/dev/null
-check "generated password for 2003" grep -qE '^[0-9a-f]{24}$' <(sql provision -e "SELECT password FROM accounts WHERE name='2003'")
+check "generated password for 2003 is strong" strong_password "$(sql provision -e "SELECT password FROM accounts WHERE name='2003'")"
+# The generator itself, many times: every password must meet the rule.
+weak="$(root provision -e "WITH RECURSIVE n (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 500)
+    SELECT COUNT(*) FROM (SELECT random_password(16) AS p FROM n) g
+    WHERE NOT (p REGEXP BINARY '^[A-Za-z0-9!%*+.^_~-]{16}\$' AND p REGEXP BINARY '[a-z]' AND p REGEXP BINARY '[A-Z]'
+               AND p REGEXP BINARY '[0-9]' AND p REGEXP BINARY '[!%*+.^_~-]')")"
+check "500 generated passwords all meet the rule" test "$weak" = 0
 check "md5_cred stored instead of the password" grep -qx "md5" <(sql asterisk -e "SELECT auth_type FROM ps_auths WHERE id='2001' AND password IS NULL")
 check "2003-webrtc endpoint with webrtc=yes" grep -qE "^ *webrtc +: yes" <(ast "pjsip show endpoint 2003-webrtc")
 check "2002 (tcp only) has no webrtc endpoint" grep -qx 0 <(sql asterisk -e "SELECT COUNT(*) FROM ps_endpoints WHERE id='2002-webrtc'")
@@ -185,7 +193,7 @@ root_old_schema="$PWD/work/old-init"
 OLD_SCHEMA_DIR="$root_old_schema" "${DC[@]}" up -d avr-asterisk-db avr-asterisk >work/up-old.log 2>&1 || { cat work/up-old.log; exit 1; }
 check "Asterisk started on the old database" wait_ready
 check "0001 recorded as already applied" grep -q "existing database: recording 0001-asterisk.sql as applied" <("${DC[@]}" logs --no-log-prefix avr-asterisk 2>&1)
-check "0002-0004 applied on top" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
+check "0002-0005 applied on top" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
 sql provision -e "INSERT INTO accounts (name, type, password) VALUES ('3001', 'local', 'p3001')" >/dev/null
 check "provision works on the old database" grep -qx 1 <(sql asterisk -e "SELECT COUNT(*) FROM ps_endpoints WHERE id='3001'")
 

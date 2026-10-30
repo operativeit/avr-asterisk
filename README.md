@@ -139,6 +139,7 @@ Triggers on the `provision` database write the realtime rows, so an account work
 
 ```sql
 -- Phone registering here over UDP/TCP/TLS, plus a 2003-webrtc endpoint for WebRTC; password generated
+-- (see it with: SELECT password FROM accounts WHERE name = '2003')
 INSERT INTO accounts (name, type, transports, callerid) VALUES ('2003', 'local', 'udp,tcp,tls,wss', 'Ana <2003>');
 
 -- Extension of another PBX (any transport and port); calls to it go to an AVR agent
@@ -163,6 +164,7 @@ INSERT INTO ddis (ddi, agent_uuid) VALUES ('+34968000678', '01a13595-4f65-7d9c-8
 | `trunk` | SIP provider | Like `external` with `register=1`; with `register=0`, `<name>-identify` on `match_ips` (default `host`) |
 | `whatsapp` | WhatsApp Business calling (Meta) | TLS + DTLS-SRTP endpoint, `<name>-auth`, `<name>-identify` on `X-FB-External-Domain: wa.meta.vc` |
 
+- A `local` account without `password` gets a generated one: 16 characters from a cryptographically secure source (`RANDOM_BYTES`), with at least one lowercase letter, uppercase letter, digit and symbol. Symbols are limited to `! % * + - . ^ _ ~`, which need no quoting in phone configs, `.env` files, URLs or shells. Asterisk only stores its hash (`md5_cred`); `provision.accounts` keeps it readable.
 - `transport` (`udp`, `tcp`, `tls`) and `port` (any) describe the remote side of `external`, `trunk` and `whatsapp` accounts; defaults are `udp` (`tls` for WhatsApp) and 5060 (5061 with `tls`).
 - Default contexts: `local` → `from-phones`, `external` → `internal`, `trunk` → `from-trunk`, `whatsapp` → `from-whatsapp`.
 - `agent_uuid` adds `internal/<username>` → `GoSub(avr,<agent_uuid>,1(avr-core:5001))`. DDIs become `incoming/<ddi>` → `Dial(PJSIP/<account>,…)` or `Dial(local/<agent_uuid>@internal,…)`.

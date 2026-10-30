@@ -15,8 +15,8 @@ services:
     environment:
       - MYSQL_DATABASE=asterisk
       - MYSQL_USER=asterisk
-      - MYSQL_PASSWORD=testpass
-      - MYSQL_ROOT_PASSWORD=testroot
+      - MYSQL_PASSWORD=Ap9!%*+-.^_~pass
+      - MYSQL_ROOT_PASSWORD=Rt7!%*+-.^_~root
     volumes:
       - ${OLD_SCHEMA_DIR:-./empty-init}:/docker-entrypoint-initdb.d:ro
     healthcheck:
@@ -37,8 +37,8 @@ services:
       - MYSQL_PORT=3306
       - MYSQL_DATABASE=asterisk
       - MYSQL_USER=asterisk
-      - MYSQL_PASSWORD=testpass
-      - MYSQL_ROOT_PASSWORD=testroot
+      - MYSQL_PASSWORD=Ap9!%*+-.^_~pass
+      - MYSQL_ROOT_PASSWORD=Rt7!%*+-.^_~root
     volumes:
       # Image defaults for sorcery.conf / extconfig.conf; deployment-like pjsip and dialplan.
       - ./test-pjsip.conf:/etc/asterisk/my_pjsip.conf:ro
