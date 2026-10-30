@@ -216,6 +216,143 @@ INSERT INTO ddis (ddi, agent_uuid) VALUES ('+34968000678', '01a13595-4f65-7d9c-8
 
 `tests/provision/run.sh` builds the image and checks the migrations (empty and existing databases), every account type, DDIs and CDRs against helper Asterisk containers.
 
+#### SQL examples
+
+Connect to the `provision` database as the application user (`MYSQL_USER`), for example:
+
+```bash
+docker compose exec avr-asterisk-db sh -c 'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" provision'
+```
+
+**Local accounts** (phones registering on this Asterisk). The SIP username is the account name unless `username` is given, and the realm is `asterisk`.
+
+```sql
+-- Generated password: read it back after the INSERT
+INSERT INTO accounts (name, type, callerid) VALUES ('1000', 'local', 'Reception <1000>');
+SELECT name, username, password FROM accounts WHERE name = '1000';
+
+-- Your own password, two devices at once, and WebRTC (also creates 1001-webrtc,
+-- whose SIP username is 1001-webrtc with the same password)
+INSERT INTO accounts (name, type, password, max_contacts, transports, callerid)
+VALUES ('1001', 'local', 'Choose-a-strong-1', 2, 'udp,tcp,tls,wss', 'Sales <1001>');
+
+-- Several accounts in one statement
+INSERT INTO accounts (name, type, callerid) VALUES
+  ('1002', 'local', 'Support <1002>'),
+  ('1003', 'local', 'Support <1003>');
+
+-- Change the password, the caller ID or the allowed transports (rows regenerated at once)
+UPDATE accounts SET password = 'Another-strong-2' WHERE name = '1000';
+UPDATE accounts SET callerid = 'Front desk <1000>' WHERE name = '1000';
+UPDATE accounts SET transports = 'tls,wss' WHERE name = '1001';
+
+-- Send calls for 1002 to an AVR agent instead of the phone (internal/1002 -> GoSub avr)
+UPDATE accounts SET agent_uuid = '01a13595-4f65-7d9c-83cd-88dc57dfbce3' WHERE name = '1002';
+UPDATE accounts SET agent_uuid = NULL WHERE name = '1002';
+
+-- Disable (removes the realtime rows, keeps the account) and enable again
+UPDATE accounts SET enabled = 0 WHERE name = '1003';
+UPDATE accounts SET enabled = 1 WHERE name = '1003';
+```
+
+**External extensions** (this Asterisk registers as an extension of another PBX). After the `INSERT`, start the registration with `pjsip show registration <name>-reg` (see above).
+
+```sql
+-- UDP 5060 (defaults)
+INSERT INTO accounts (name, type, host, username, password)
+VALUES ('pbx-128', 'external', 'pbx.example.com', '128', 'remote-secret');
+
+-- TCP on a non-standard port; calls from that PBX to this extension go to an AVR agent
+INSERT INTO accounts (name, type, host, port, transport, username, password, agent_uuid)
+VALUES ('pbx-129', 'external', 'pbx.example.com', 5062, 'tcp', '129', 'remote-secret',
+        '01a13595-4f65-7d9c-83cd-88dc57dfbce3');
+
+-- TLS (port defaults to 5061)
+INSERT INTO accounts (name, type, host, transport, username, password)
+VALUES ('pbx-130', 'external', 'pbx.example.com', 'tls', '130', 'remote-secret');
+```
+
+**SIP trunks**
+
+```sql
+-- Authenticated by IP: calls from these addresses are this trunk (match_ips defaults to host)
+INSERT INTO accounts (name, type, host, match_ips)
+VALUES ('carrier1', 'trunk', 'sip.carrier.example', '203.0.113.10,203.0.113.11,198.51.100.0/24');
+
+-- IP trunk that also asks for digest credentials on outbound calls
+INSERT INTO accounts (name, type, host, match_ips, username, password)
+VALUES ('carrier2', 'trunk', 'sip.carrier2.example', '192.0.2.20', 'acct42', 'trunk-secret');
+
+-- Registering trunk over TLS (start it with: pjsip show registration voip1-reg)
+INSERT INTO accounts (name, type, host, register, transport, username, password)
+VALUES ('voip1', 'trunk', 'sip.provider.example', 1, 'tls', 'acct1', 'trunk-secret');
+```
+
+**WhatsApp Business calling**
+
+```sql
+INSERT INTO accounts (name, type, username, password, from_domain)
+VALUES ('wa-main', 'whatsapp', '+34968000678', 'meta-sip-password', 'crm.example.com');
+```
+
+**DDIs** (become `incoming/<ddi>` in the realtime dialplan; trunk and WhatsApp calls follow them)
+
+```sql
+-- To an account, recorded on answer (record=1 by default)
+INSERT INTO ddis (ddi, account) VALUES ('34968012704', '1000');
+
+-- To an account, without recording and ringing for 20 seconds
+INSERT INTO ddis (ddi, account, record, ring_timeout) VALUES ('34968012705', '1001', 0, 20);
+
+-- To an AVR agent (also creates internal/<agent_uuid> if missing)
+INSERT INTO ddis (ddi, agent_uuid) VALUES ('34968012706', '01a13595-4f65-7d9c-83cd-88dc57dfbce3');
+
+-- The WhatsApp number to an agent
+INSERT INTO ddis (ddi, agent_uuid) VALUES ('+34968000678', '01a13595-4f65-7d9c-83cd-88dc57dfbce3');
+
+-- Move a DDI to another account, or from an account to an agent
+UPDATE ddis SET account = '1001' WHERE ddi = '34968012704';
+UPDATE ddis SET account = NULL, agent_uuid = '01a13595-4f65-7d9c-83cd-88dc57dfbce3' WHERE ddi = '34968012705';
+
+-- Delete a DDI (removes its dialplan row)
+DELETE FROM ddis WHERE ddi = '34968012706';
+```
+
+**Deleting accounts.** An account with DDIs cannot be deleted: move or delete its DDIs first. Deleting an `external` account or registering trunk queues an `unregister`; run `pjsip send unregister <name>-reg`.
+
+```sql
+DELETE FROM ddis WHERE account = '1000';
+DELETE FROM accounts WHERE name = '1000';
+
+-- Several at once
+DELETE FROM accounts WHERE name IN ('1002', '1003');
+
+DELETE FROM accounts WHERE name = 'pbx-128';
+```
+
+**Queries**
+
+```sql
+-- Accounts and their DDIs
+SELECT a.name, a.type, a.enabled, a.username, a.host, a.agent_uuid,
+       GROUP_CONCAT(d.ddi ORDER BY d.ddi) AS ddis
+  FROM accounts a LEFT JOIN ddis d ON d.account = a.name
+ GROUP BY a.name ORDER BY a.type, a.name;
+
+-- DDIs and where they go
+SELECT ddi, COALESCE(account, CONCAT('agent ', agent_uuid)) AS destination, ring_timeout, record FROM ddis ORDER BY ddi;
+
+-- Registrations waiting for "pjsip show registration" / "pjsip send unregister"
+SELECT id, registration_id, action, created_at FROM registration_queue WHERE processed_at IS NULL ORDER BY id;
+UPDATE registration_queue SET processed_at = NOW() WHERE id = 1;
+
+-- What the triggers wrote in the realtime database (MYSQL_DATABASE, here asterisk)
+SELECT id, transport, context, aors, auth, outbound_auth FROM asterisk.ps_endpoints WHERE id LIKE '1001%';
+SELECT context, exten, app, appdata FROM asterisk.extensions WHERE context IN ('incoming', 'internal') ORDER BY context, exten;
+```
+
+In the Asterisk console (`asterisk -rvvv`): `pjsip show endpoint 1001`, `pjsip show contacts`, `pjsip show registrations`, `dialplan show 34968012704@incoming`.
+
 ## Example Configuration Files
 
 ### pjsip.conf
