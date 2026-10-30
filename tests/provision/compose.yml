@@ -11,7 +11,7 @@ services:
   avr-asterisk-db:
     image: mysql:8.0.15
     platform: linux/x86_64
-    command: mysqld --default-authentication-plugin=mysql_native_password
+    command: mysqld --default-authentication-plugin=mysql_native_password --event-scheduler=ON
     environment:
       - MYSQL_DATABASE=asterisk
       - MYSQL_USER=asterisk

@@ -1,0 +1,33 @@
+# Test environment for the CDR partitions (see run.sh): MySQL and the image
+# built from this repository, which applies the migrations at startup.
+name: avr-asterisk-cdr-test
+
+services:
+  avr-asterisk-db:
+    image: mysql:8.0.15
+    platform: linux/x86_64
+    command: mysqld --default-authentication-plugin=mysql_native_password --event-scheduler=ON
+    environment:
+      - MYSQL_DATABASE=asterisk
+      - MYSQL_USER=asterisk
+      - MYSQL_PASSWORD=Ap9!%*+-.^_~pass
+      - MYSQL_ROOT_PASSWORD=Rt7!%*+-.^_~root
+    volumes:
+      - ${INIT_DIR:-./empty-init}:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 3s
+      retries: 40
+
+  avr-asterisk:
+    build: ../..
+    image: avr-asterisk:cdr-test
+    depends_on:
+      avr-asterisk-db: { condition: service_healthy }
+    environment:
+      - MYSQL_HOST=avr-asterisk-db
+      - MYSQL_PORT=3306
+      - MYSQL_DATABASE=asterisk
+      - MYSQL_USER=asterisk
+      - MYSQL_PASSWORD=Ap9!%*+-.^_~pass
+      - MYSQL_ROOT_PASSWORD=Rt7!%*+-.^_~root
