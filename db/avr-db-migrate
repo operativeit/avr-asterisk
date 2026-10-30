@@ -1,0 +1,67 @@
+#!/bin/bash
+# Apply the database migrations shipped with this image, in order, once each.
+# Run by entrypoint.sh before Asterisk starts; applied versions are recorded
+# in <MYSQL_DATABASE>.schema_migrations.
+#
+# Needs root (it creates databases, triggers and grants): MYSQL_ROOT_PASSWORD.
+# Database names come from MYSQL_DATABASE, CDR_DATABASE, RECORDINGS_DATABASE
+# and PROVISION_DATABASE; the application user (MYSQL_USER) gets access to them.
+set -euo pipefail
+
+MIGRATIONS_DIR="${MIGRATIONS_DIR:-/usr/share/avr-asterisk/migrations}"
+TIMEOUT="${DB_MIGRATE_TIMEOUT:-120}"
+
+log() { echo "avr-db-migrate: $*"; }
+die() { echo "avr-db-migrate: ERROR: $*" >&2; exit 1; }
+
+: "${MYSQL_HOST:?MYSQL_HOST is not set}"
+: "${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is not set}"
+port="${MYSQL_PORT:-3306}"
+asterisk_db="${MYSQL_DATABASE:-asterisk}"
+cdr_db="${CDR_DATABASE:-cdr}"
+recordings_db="${RECORDINGS_DATABASE:-recordings}"
+provision_db="${PROVISION_DATABASE:-provision}"
+app_user="${MYSQL_USER:-asterisk}"
+
+# The names end up in SQL; accept identifiers only.
+for name in "$asterisk_db" "$cdr_db" "$recordings_db" "$provision_db"; do
+    [[ "$name" =~ ^[A-Za-z0-9_]+$ ]] || die "invalid database name '$name'"
+done
+[[ "$app_user" =~ ^[A-Za-z0-9_.-]+$ ]] || die "invalid MYSQL_USER '$app_user'"
+
+export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"
+sql() { mysql --protocol=TCP -h"$MYSQL_HOST" -P"$port" -uroot "$@"; }
+
+# Only the real server accepts TCP; MySQL's first-initialisation server does not.
+deadline=$((SECONDS + TIMEOUT))
+until sql -N -e 'SELECT 1' "$asterisk_db" >/dev/null 2>&1; do
+    [ "$SECONDS" -lt "$deadline" ] || die "cannot connect to $MYSQL_HOST:$port as root within ${TIMEOUT}s"
+    sleep 2
+done
+
+sql "$asterisk_db" -e "CREATE TABLE IF NOT EXISTS schema_migrations (
+    version VARCHAR(255) NOT NULL PRIMARY KEY,
+    applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+
+# Databases created before migrations existed already have the realtime schema.
+if [ "$(sql -N "$asterisk_db" -e 'SELECT COUNT(*) FROM schema_migrations')" = 0 ] &&
+   [ "$(sql -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$asterisk_db' AND table_name = 'ps_endpoints'")" = 1 ]; then
+    log "existing database: recording 0001-asterisk.sql as applied"
+    sql "$asterisk_db" -e "INSERT INTO schema_migrations (version) VALUES ('0001-asterisk.sql')"
+fi
+
+applied="$(sql -N "$asterisk_db" -e 'SELECT version FROM schema_migrations')"
+pending=0
+for file in "$MIGRATIONS_DIR"/*.sql; do
+    [ -e "$file" ] || continue
+    version="$(basename "$file")"
+    grep -qxF "$version" <<<"$applied" && continue
+    pending=1
+    log "applying $version"
+    sed -e "s/{{asterisk_db}}/$asterisk_db/g" -e "s/{{cdr_db}}/$cdr_db/g" \
+        -e "s/{{recordings_db}}/$recordings_db/g" -e "s/{{provision_db}}/$provision_db/g" \
+        -e "s/{{app_user}}/$app_user/g" "$file" | sql "$asterisk_db" ||
+        die "$version failed"
+    sql "$asterisk_db" -e "INSERT INTO schema_migrations (version) VALUES ('$version')"
+done
+[ "$pending" = 1 ] || log "schema is up to date"

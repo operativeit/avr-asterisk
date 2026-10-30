@@ -1,3 +1,8 @@
+-- Demo data (endpoints 1000/1001, a sample trunk, queue, voicemail) for the
+-- realtime tables. Not applied automatically. Load it after the first start:
+--   docker compose exec -T avr-asterisk-db sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" asterisk' < db/seed/demo.sql
+-- Its passwords are public: change them, or create accounts with provision instead.
+
 --
 -- Dumping data for table `ps_aors`
 --

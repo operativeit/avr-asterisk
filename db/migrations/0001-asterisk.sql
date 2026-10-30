@@ -1,3 +1,10 @@
+-- Asterisk realtime schema (PJSIP, dialplan, queues, voicemail...) in the
+-- database named by MYSQL_DATABASE. CDRs and recordings have their own
+-- databases (0002, 0003).
+--
+-- Databases created before migrations existed already have this schema:
+-- avr-db-migrate records this file as applied without running it.
+
 /*M!999999\- enable the sandbox mode */ 
 -- MariaDB dump 10.19  Distrib 10.11.11-MariaDB, for debian-linux-gnu (x86_64)
 --
@@ -1248,93 +1255,3 @@ UNLOCK TABLES;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
 -- Dump completed on 2025-07-29 19:59:09
-
-DROP TABLE IF EXISTS `recordings`;
-CREATE TABLE `recordings` (
-  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
-  `uuid` char(36) NOT NULL,
-
-  `caller` varchar(80) DEFAULT NULL,
-  `destination` varchar(80) DEFAULT NULL,
-  `duration` int unsigned DEFAULT NULL,
-  `billsec` int unsigned DEFAULT NULL,
-
-  `recording_path` varchar(512) NOT NULL,
-  `recording_blob` longblob NOT NULL,
-  `recording_size` bigint(20) unsigned NOT NULL,
-
-  `audio_sha256` char(64) DEFAULT NULL,
-  `audio_hmac_sha256` char(64) DEFAULT NULL,
-
-  `transcription_status` enum(
-    'pending',
-    'processing',
-    'done',
-    'error',
-    'skipped'
-  ) NOT NULL DEFAULT 'pending',
-
-  `transcription_text` longtext DEFAULT NULL,
-  `transcription_sha256` char(64) DEFAULT NULL,
-  `transcription_hmac_sha256` char(64) DEFAULT NULL,
-  `transcription_model` varchar(80) DEFAULT NULL,
-  `transcription_language` varchar(16) DEFAULT NULL,
-  `transcribed_at` timestamp NULL DEFAULT NULL,
-
-  `summary_text` longtext DEFAULT NULL,
-  `summary_sha256` char(64) DEFAULT NULL,
-  `summary_hmac_sha256` char(64) DEFAULT NULL,
-
-  `analysis_json` json DEFAULT NULL,
-  `analysis_sha256` char(64) DEFAULT NULL,
-  `analysis_hmac_sha256` char(64) DEFAULT NULL,
-
-  `processing_error` text DEFAULT NULL,
-
-  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uniq_uuid` (`uuid`),
-
-  KEY `idx_created_at` (`created_at`),
-  KEY `idx_caller` (`caller`),
-  KEY `idx_destination` (`destination`),
-  KEY `idx_audio_sha256` (`audio_sha256`),
-  KEY `idx_transcription_status_created_at` (`transcription_status`, `created_at`)
-) ENGINE=InnoDB
-  DEFAULT CHARSET=utf8mb4
-  COLLATE=utf8mb4_unicode_ci;
-
-
-
-CREATE TABLE `cdr` (
-  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `calldate` DATETIME NOT NULL,
-  `clid` VARCHAR(80) NOT NULL DEFAULT '',
-  `src` VARCHAR(80) NOT NULL DEFAULT '',
-  `dst` VARCHAR(80) NOT NULL DEFAULT '',
-  `dcontext` VARCHAR(80) NOT NULL DEFAULT '',
-  `channel` VARCHAR(100) NULL DEFAULT NULL,
-  `dstchannel` VARCHAR(100) NULL DEFAULT NULL,
-  `lastapp` VARCHAR(200) NULL DEFAULT NULL,
-  `lastdata` VARCHAR(255) NULL DEFAULT NULL,
-  `duration` INT UNSIGNED NULL DEFAULT NULL,
-  `billsec` INT UNSIGNED NULL DEFAULT NULL,
-  `disposition` VARCHAR(45) NULL DEFAULT NULL,
-  `amaflags` VARCHAR(50) NULL DEFAULT NULL,
-  `accountcode` VARCHAR(80) NULL DEFAULT NULL,
-  `uniqueid` VARCHAR(64) NOT NULL DEFAULT '',
-  `userfield` VARCHAR(255) NULL DEFAULT NULL,
-
-  PRIMARY KEY (`id`),
-  KEY `idx_calldate` (`calldate`),
-  KEY `idx_src` (`src`),
-  KEY `idx_dst` (`dst`),
-  KEY `idx_uniqueid` (`uniqueid`)
-)
-ENGINE=InnoDB
-DEFAULT CHARSET=utf8mb4
-COLLATE=utf8mb4_unicode_ci;
-
-

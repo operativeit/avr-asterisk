@@ -1,0 +1,96 @@
+# Integration test for the database migrations and provision (see run.sh).
+# avr-asterisk is built from this repository; the helpers use the published image.
+name: avr-asterisk-provision-test
+
+x-helper: &helper
+  image: operativeit/avr-asterisk
+  environment:
+    - DB_MIGRATE=no
+
+services:
+  avr-asterisk-db:
+    image: mysql:8.0.15
+    platform: linux/x86_64
+    command: mysqld --default-authentication-plugin=mysql_native_password
+    environment:
+      - MYSQL_DATABASE=asterisk
+      - MYSQL_USER=asterisk
+      - MYSQL_PASSWORD=testpass
+      - MYSQL_ROOT_PASSWORD=testroot
+    volumes:
+      - ${OLD_SCHEMA_DIR:-./empty-init}:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 3s
+      retries: 40
+    networks:
+      net: { ipv4_address: 172.31.251.10 }
+
+  avr-asterisk:
+    build: ../..
+    image: avr-asterisk:provision-test
+    command: ["asterisk", "-f", "-vvv"]   # verbose dialplan in the test log
+    depends_on:
+      avr-asterisk-db: { condition: service_healthy }
+    environment:
+      - MYSQL_HOST=avr-asterisk-db
+      - MYSQL_PORT=3306
+      - MYSQL_DATABASE=asterisk
+      - MYSQL_USER=asterisk
+      - MYSQL_PASSWORD=testpass
+      - MYSQL_ROOT_PASSWORD=testroot
+    volumes:
+      # Image defaults for sorcery.conf / extconfig.conf; deployment-like pjsip and dialplan.
+      - ./test-pjsip.conf:/etc/asterisk/my_pjsip.conf:ro
+      - ./test-extensions.conf:/etc/asterisk/my_extensions.conf:ro
+      - ./helper-extensions.d:/etc/asterisk/extensions.d:ro
+      - ./work/cert.pem:/etc/asterisk/keys/asterisk.crt:ro
+      - ./work/key.pem:/etc/asterisk/keys/asterisk.key:ro
+    networks:
+      net: { ipv4_address: 172.31.251.11 }
+
+  phone:     # registers on our local accounts
+    <<: *helper
+    volumes:
+      - ./phone.conf:/etc/asterisk/my_pjsip.conf:ro
+      - ./helper-sorcery.conf:/etc/asterisk/my_sorcery.conf:ro
+      - ./helper-extensions.d:/etc/asterisk/extensions.d:ro
+    networks:
+      net: { ipv4_address: 172.31.251.12 }
+
+  pbx:       # remote PBX where our external accounts register
+    <<: *helper
+    volumes:
+      - ./pbx.conf:/etc/asterisk/my_pjsip.conf:ro
+      - ./helper-sorcery.conf:/etc/asterisk/my_sorcery.conf:ro
+      - ./helper-extensions.d:/etc/asterisk/extensions.d:ro
+      - ./work/cert.pem:/etc/asterisk/keys/asterisk.crt:ro
+      - ./work/key.pem:/etc/asterisk/keys/asterisk.key:ro
+    networks:
+      net: { ipv4_address: 172.31.251.13 }
+
+  carrier:   # IP-authenticated trunk sending DDI calls
+    <<: *helper
+    volumes:
+      - ./carrier.conf:/etc/asterisk/my_pjsip.conf:ro
+      - ./helper-sorcery.conf:/etc/asterisk/my_sorcery.conf:ro
+      - ./helper-extensions.conf:/etc/asterisk/my_extensions.conf:ro
+      - ./helper-extensions.d:/etc/asterisk/extensions.d:ro
+    networks:
+      net: { ipv4_address: 172.31.251.14 }
+
+  meta:      # WhatsApp: calls carrying X-FB-External-Domain
+    <<: *helper
+    volumes:
+      - ./carrier.conf:/etc/asterisk/my_pjsip.conf:ro
+      - ./helper-sorcery.conf:/etc/asterisk/my_sorcery.conf:ro
+      - ./helper-extensions.conf:/etc/asterisk/my_extensions.conf:ro
+      - ./helper-extensions.d:/etc/asterisk/extensions.d:ro
+    networks:
+      net: { ipv4_address: 172.31.251.15 }
+
+networks:
+  net:
+    ipam:
+      config:
+        - subnet: 172.31.251.0/24
