@@ -275,7 +275,9 @@ RUN sed -i 's/enabled = no/enabled = yes/' /etc/asterisk/manager.conf; \
     sed -i 's/;tlsenable=yes/tlsenable=yes/' /etc/asterisk/http.conf; \
     sed -i 's/;tlsbindaddr=0.0.0.0:8089/tlsbindaddr=0.0.0.0:8089/' /etc/asterisk/http.conf; \
     sed -i 's/;tlscertfile=<\/path\/to\/certificate.pem>/tlscertfile=\/etc\/asterisk\/keys\/asterisk.crt/' /etc/asterisk/http.conf; \
-    sed -i 's/;tlsprivatekey=<\/path\/to\/private.pem>/tlsprivatekey=\/etc\/asterisk\/keys\/asterisk.key/' /etc/asterisk/http.conf; 
+    sed -i 's/;tlsprivatekey=<\/path\/to\/private.pem>/tlsprivatekey=\/etc\/asterisk\/keys\/asterisk.key/' /etc/asterisk/http.conf; \
+    sed -i 's/;enable_status=no/enable_status=no/' /etc/asterisk/http.conf; \
+    grep -q '^enable_status=no' /etc/asterisk/http.conf;
 
 RUN echo "#include \"my_extensions.conf\"" >> "/etc/asterisk/extensions.conf"; \
     echo "#include \"extensions.d/*.conf\"" >> "/etc/asterisk/extensions.conf"; \
