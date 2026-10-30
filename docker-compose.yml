@@ -51,6 +51,8 @@ services:
       - ./conf/extensions.conf:/etc/asterisk/my_extensions.conf
       - ./conf/queues.conf:/etc/asterisk/my_queues.conf
       - ./conf/ari.conf:/etc/asterisk/my_ari.conf
+      - ./conf/extconfig.conf:/etc/asterisk/my_extconfig.conf
+      - ./conf/sorcery.conf:/etc/asterisk/my_sorcery.conf
       - ./conf/extensions.d:/etc/asterisk/extensions.d
       - ./sounds:/var/lib/asterisk/sounds/avr
       - ./agi-bin:/var/lib/asterisk/agi-bin/avr

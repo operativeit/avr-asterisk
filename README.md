@@ -97,8 +97,10 @@ The container uses the following default configuration files:
 - `manager.conf`
 - `queues.conf`
 - `ari.conf`
+- `extconfig.conf` (realtime table mappings)
+- `sorcery.conf` (PJSIP object storage)
 
-You can override these configurations by mounting your own configuration files to `/etc/asterisk/` in the container.
+You can override these configurations by mounting your own configuration files to `/etc/asterisk/` in the container. Each of these files includes a `my_<name>.conf` (for example `my_pjsip.conf`); mount yours there. For `extconfig.conf` and `sorcery.conf`, the image ships defaults as `my_extconfig.conf` and `my_sorcery.conf`, and a mounted file replaces them.
 
 ### Default Ports
 
