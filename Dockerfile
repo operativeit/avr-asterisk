@@ -293,11 +293,19 @@ COPY conf/odbcinst.ini /etc/odbcinst.ini
 RUN sed -i "s#/usr/lib/x86_64-linux-gnu/odbc/libmaodbc.so#$(ls /usr/lib/*-linux-gnu/odbc/libmaodbc.so)#" /etc/odbcinst.ini
 # Defaults; mount your own my_extconfig.conf / my_sorcery.conf to replace them.
 COPY conf/extconfig.conf /etc/asterisk/my_extconfig.conf
-COPY conf/cdr_adaptive_odbc.conf /etc/asterisk/cdr_adaptive_odbc.conf
+COPY conf/cdr_odbc.conf /etc/asterisk/cdr_odbc.conf
 COPY conf/sorcery.conf /etc/asterisk/my_sorcery.conf
 RUN echo "#include \"my_extconfig.conf\"" > /etc/asterisk/extconfig.conf; \
     echo "#include \"my_sorcery.conf\"" > /etc/asterisk/sorcery.conf
 COPY conf/modules.conf /etc/asterisk/modules.conf
+
+# Database migrations, applied by entrypoint.sh before Asterisk starts.
+RUN set -ex; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends mysql-client-core-8.0; \
+    apt-get clean; rm -rf /var/lib/apt/lists/*
+COPY db/migrations /usr/share/avr-asterisk/migrations
+COPY db/avr-db-migrate /usr/local/bin/avr-db-migrate
 
 COPY entrypoint.sh /entrypoint.sh
 

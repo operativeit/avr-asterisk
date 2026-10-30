@@ -2,11 +2,30 @@
 
 set -e
 
+# Create or update the databases (realtime, cdr, recordings, provision)
+# before Asterisk connects. Needs MYSQL_ROOT_PASSWORD; DB_MIGRATE=no skips it.
+if [ "${DB_MIGRATE:-yes}" != "no" ]; then
+    if [ -n "${MYSQL_ROOT_PASSWORD:-}" ]; then
+        avr-db-migrate
+    else
+        echo "entrypoint: MYSQL_ROOT_PASSWORD not set, skipping database migrations" >&2
+    fi
+fi
+
 cat <<EOF > /etc/odbc.ini
 [asterisk]
 Description = MySQL Server
 Driver = MySQL ODBC Driver
 Database = ${MYSQL_DATABASE}
+Server =  ${MYSQL_HOST}
+User = ${MYSQL_USER}
+Password = ${MYSQL_PASSWORD}
+Port = ${MYSQL_PORT}
+
+[cdr]
+Description = MySQL Server (CDR)
+Driver = MySQL ODBC Driver
+Database = ${CDR_DATABASE:-cdr}
 Server =  ${MYSQL_HOST}
 User = ${MYSQL_USER}
 Password = ${MYSQL_PASSWORD}
@@ -18,6 +37,13 @@ cat <<EOF > /etc/asterisk/res_odbc.conf
 [asterisk]
 enabled => yes
 dsn => asterisk
+username => ${MYSQL_USER}
+password => ${MYSQL_PASSWORD}
+pre-connect => yes
+
+[cdr]
+enabled => yes
+dsn => cdr
 username => ${MYSQL_USER}
 password => ${MYSQL_PASSWORD}
 pre-connect => yes
