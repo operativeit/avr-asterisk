@@ -65,7 +65,7 @@ wait_ready() {
 
 section "Migrations applied by the entrypoint (empty database)"
 check "Asterisk started and connected to the database" wait_ready
-check "all migrations recorded" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql,0008-provision-max-contacts.sql,0009-cdr-billing.sql,0010-provision-tenant.sql,0011-billing.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
+check "all migrations recorded" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql,0008-provision-max-contacts.sql,0009-cdr-billing.sql,0010-provision-tenant.sql,0011-billing.sql,0012-provision-ddi-webrtc.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
 check "databases cdr, recordings and provision exist" grep -qx 3 <(root -e "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name IN ('cdr','recordings','provision')")
 check "no cdr or recordings table left in asterisk" grep -qx 0 <(root -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='asterisk' AND table_name IN ('cdr','recordings')")
 check "cdr ODBC connection up" grep -q "active connections: 1" <(ast "odbc show cdr")
@@ -89,7 +89,9 @@ check "nothing left behind by rejected inserts" grep -qx 0 <(sql provision -e "S
 section "Local accounts (no reload)"
 sql provision -e "INSERT INTO accounts (name, type, password) VALUES ('2001', 'local', 'phonepass2001');
                   INSERT INTO accounts (name, type, password, transports) VALUES ('2002', 'local', 'phonepass2002', 'tcp');
-                  INSERT INTO accounts (name, type, transports, callerid) VALUES ('2003', 'local', 'udp,wss', 'Ana <2003>');" >/dev/null
+                  INSERT INTO accounts (name, type, transports, callerid) VALUES ('2003', 'local', 'udp,wss', 'Ana <2003>');
+                  INSERT INTO accounts (name, type, password, transports) VALUES ('2004', 'local', 'webrtcpass2004', 'wss');
+                  INSERT INTO accounts (name, type, password, transports) VALUES ('2005', 'local', 'phonepass2005', 'udp,wss');" >/dev/null
 check "generated password for 2003 is strong" strong_password "$(sql provision -e "SELECT password FROM accounts WHERE name='2003'")"
 # The generator itself, many times: every password must meet the rule.
 weak="$(root provision -e "WITH RECURSIVE n (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 500)
@@ -104,6 +106,8 @@ ast "pjsip send register *all" phone >/dev/null
 sleep 6
 wait_for "phone registered 2001 over UDP" bash -c "docker compose -f $PWD/compose.yml exec -T avr-asterisk asterisk -rx 'pjsip show contacts' | grep -q '2001/sip:2001@172.31.251.12:5060 '"
 wait_for "phone registered 2002 over TCP" bash -c "docker compose -f $PWD/compose.yml exec -T avr-asterisk asterisk -rx 'pjsip show contacts' | grep -qi '2002/sip:2002@172.31.251.12:[0-9]*;transport=tc'"
+wait_for "phone registered 2005 over UDP" bash -c "docker compose -f $PWD/compose.yml exec -T avr-asterisk asterisk -rx 'pjsip show contacts' | grep -q '2005/sip:2005@172.31.251.12:5060 '"
+check "2004 (wss only) has only the webrtc endpoint" is "$(sql asterisk -e "SELECT GROUP_CONCAT(id) FROM ps_endpoints WHERE id LIKE '2004%'")" 2004-webrtc
 check "local accounts default to max_contacts 5" is "$(sql asterisk -e "SELECT max_contacts FROM ps_aors WHERE id='2001'")" 5
 contacts_2001() { sql asterisk -e "SELECT COUNT(*) FROM ps_contacts WHERE endpoint='2001'"; }
 sql provision -e "UPDATE accounts SET callerid = 'Front desk <2001>' WHERE name = '2001'" >/dev/null
@@ -189,6 +193,44 @@ check "ddi 34968000002 goes to the agent" grep -q "34968000002@incoming:2\] Dial
 cdr_seen() { [ "$(sql cdr -e "SELECT COUNT(*) FROM cdr WHERE dst IN ('34968000001', '34968000002')")" -ge 1 ]; }
 wait_for "CDRs written to the cdr database" cdr_seen
 
+section "DDIs ring every endpoint of a local account"
+TENANT=01a1359f-0000-7000-8000-000000000001
+ddi_dial() { sql asterisk -e "SELECT GROUP_CONCAT(appdata ORDER BY priority SEPARATOR '|') FROM extensions WHERE context='incoming' AND exten='$1'"; }
+sql provision -e "INSERT INTO ddis (ddi, account) VALUES ('34968000005', '2005');
+                  INSERT INTO ddis (ddi, account, tenant_uuid, record, ring_timeout) VALUES ('34968000004', '2004', '$TENANT', 0, 20);" >/dev/null
+check "2001 (no wss) dials PJSIP/2001 only" is "$(ddi_dial 34968000001)" 'PJSIP/2001,30,U(start-recording-on-answer^${UUID})'
+check "2005 (udp,wss) dials both endpoints, recorded" is "$(ddi_dial 34968000005)" 'PJSIP/2005&PJSIP/2005-webrtc,30,U(start-recording-on-answer^${UUID})'
+check "2004 (wss only) dials 2004-webrtc only, tenant kept" is "$(ddi_dial 34968000004)" "CDR(tenant_id)=$TENANT|PJSIP/2004-webrtc,20"
+"${DC[@]}" exec -d browser bash /webrtc-client.sh 2005-webrtc phonepass2005 /tmp/b2005.log
+"${DC[@]}" exec -d browser bash /webrtc-client.sh 2004-webrtc webrtcpass2004 /tmp/b2004.log
+wait_for "browser registers as 2005-webrtc" in_browser grep -qx "REGISTER 200" /tmp/b2005.log
+wait_for "browser registers as 2004-webrtc" in_browser grep -qx "REGISTER 200" /tmp/b2004.log
+# The phone helper logs the SIP messages it receives.
+ast "logger add channel sip.log verbose" phone >/dev/null
+ast "pjsip set logger on" phone >/dev/null
+phone_sip() { "${DC[@]}" exec -T phone cat /var/log/asterisk/sip.log 2>/dev/null; }
+phone_got() { phone_sip | grep -q "$1"; }
+ast "channel originate PJSIP/34968000005@ours application Wait 3" carrier >/dev/null
+ast "channel originate PJSIP/34968000004@ours application Wait 3" carrier >/dev/null
+ast "channel originate PJSIP/34968000001@ours application Wait 3" carrier >/dev/null
+wait_for "carrier call to 34968000005 rings the browser (2005-webrtc)" in_browser grep -q "^INVITE sip:2005-webrtc@" /tmp/b2005.log
+wait_for "and the phone (2005)" phone_got "INVITE sip:2005@172.31.251.12"
+check "carrier call to 34968000004 rings the wss-only browser" in_browser grep -q "^INVITE sip:2004-webrtc@" /tmp/b2004.log
+wait_for "carrier call to 34968000001 still rings the plain phone (2001)" phone_got "INVITE sip:2001@172.31.251.12"
+check "dialplan ran Dial(PJSIP/2005&PJSIP/2005-webrtc)" grep -q "34968000005@incoming:1\] Dial(.*PJSIP/2005&PJSIP/2005-webrtc" <(dialplan_log)
+# Changing transports rewrites the account's DDIs (tenant, timeout and record kept).
+sql provision -e "UPDATE accounts SET transports = 'udp,wss' WHERE name = '2004'" >/dev/null
+check "2004 to udp,wss: its ddi dials both" is "$(ddi_dial 34968000004)" "CDR(tenant_id)=$TENANT|PJSIP/2004&PJSIP/2004-webrtc,20"
+check "and the browser stays registered on 2004-webrtc" wss_contact 2004-webrtc
+sql provision -e "UPDATE accounts SET transports = 'udp' WHERE name = '2004'" >/dev/null
+check "2004 to udp: its ddi dials PJSIP/2004 only" is "$(ddi_dial 34968000004)" "CDR(tenant_id)=$TENANT|PJSIP/2004,20"
+check "other ddis untouched" is "$(ddi_dial 34968000005)" 'PJSIP/2005&PJSIP/2005-webrtc,30,U(start-recording-on-answer^${UUID})'
+# What the migration does to DDIs written by an older apply_ddi.
+root asterisk -e "UPDATE extensions SET appdata = 'PJSIP/2005,30' WHERE context = 'incoming' AND exten = '34968000005'" >/dev/null
+root provision -e "CALL refresh_account_ddis(NULL)" >/dev/null
+check "refresh_account_ddis rewrites existing ddis" is "$(ddi_dial 34968000005)" 'PJSIP/2005&PJSIP/2005-webrtc,30,U(start-recording-on-answer^${UUID})'
+check "and leaves agent ddis alone" grep -q "local/$AGENT@internal" <(ddi_dial 34968000002)
+
 section "Registering trunk"
 sql provision -e "INSERT INTO accounts (name, type, host, register, username, password, transport)
                   VALUES ('voip1', 'trunk', 'sip.provider.example', 1, 'acct1', 'secret1', 'tls');" >/dev/null
@@ -236,7 +278,7 @@ root_old_schema="$PWD/work/old-init"
 OLD_SCHEMA_DIR="$root_old_schema" "${DC[@]}" up -d avr-asterisk-db avr-asterisk >work/up-old.log 2>&1 || { cat work/up-old.log; exit 1; }
 check "Asterisk started on the old database" wait_ready
 check "0001 recorded as already applied" grep -q "existing database: recording 0001-asterisk.sql as applied" <("${DC[@]}" logs --no-log-prefix avr-asterisk 2>&1)
-check "0002-0011 applied on top" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql,0008-provision-max-contacts.sql,0009-cdr-billing.sql,0010-provision-tenant.sql,0011-billing.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
+check "0002-0012 applied on top" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql,0008-provision-max-contacts.sql,0009-cdr-billing.sql,0010-provision-tenant.sql,0011-billing.sql,0012-provision-ddi-webrtc.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
 sql provision -e "INSERT INTO accounts (name, type, password) VALUES ('3001', 'local', 'p3001')" >/dev/null
 check "provision works on the old database" grep -qx 1 <(sql asterisk -e "SELECT COUNT(*) FROM ps_endpoints WHERE id='3001'")
 
