@@ -139,6 +139,15 @@ rate "--rerate-from=$day" >/dev/null
 check "--rerate-from applies new prices" is "$(cdr cost "dst = '34968000001'")" "$(per_second 0.6 "dst = '34968000001'")"
 check "and rebuilds the balances" is "$(balance $T1 daily in)" "$(sum $T1 in)"
 
+sql billing -e "UPDATE billing_carriers SET in_billing_profile_id = NULL WHERE trunk = 'carrier1'" >/dev/null
+rate "--rerate-from=$day" >/dev/null
+check "carrier without incoming profile: incoming legs cost it 0, ok" is "$(cdr "CONCAT_WS(' ', carrier_cost, IFNULL(carrier_billing_profile_id, '-'), rating_status)" "dst = '34968000001'")" "0.0000 - ok"
+sql billing -e "UPDATE billing_carriers SET out_billing_profile_id = NULL WHERE trunk = 'carrier1'" >/dev/null
+rate "--rerate-from=$day" >/dev/null
+check "but outgoing legs without a profile fail" is "$(cdr rating_status "dst = '34968123456'")" failed_no_carrier
+sql billing -e "UPDATE billing_carriers SET in_billing_profile_id = 4, out_billing_profile_id = 3 WHERE trunk = 'carrier1'" >/dev/null
+rate "--rerate-from=$day" >/dev/null
+
 section "cdr_report view"
 check "one line per tagged leg" is "$(sql billing -e "SELECT COUNT(*) FROM cdr_report")" "$(sql cdr -e "SELECT COUNT(*) FROM cdr WHERE direction IS NOT NULL")"
 check "human duration and destination name" grep -qE "^34600111222 00h 00m 0[0-9]s Spain mobile$" <<<"$(sql billing -e "SELECT CONCAT_WS(' ', destination, duration_human, destination_name) FROM cdr_report WHERE destination = '34600111222'")"

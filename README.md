@@ -270,7 +270,7 @@ Asterisk writes one CDR per pair of channels in a bridge. A call the agent trans
 | `billing_zones` | Destination names of a profile (`zone`, `detail`) |
 | `billing_fees` | `destination`: regular expression on the E.164 number without `+` (`^34[67].*$`); the longest expression of the profile wins. One price: `init_rate` for the first `init_interval` seconds, then `follow_rate` per `follow_interval` seconds; rates per minute |
 | `billing_tenants` | `tenant_id` → `in_billing_profile_id`, `out_billing_profile_id` (the tenant's price) |
-| `billing_carriers` | `trunk` → `in_billing_profile_id`, `out_billing_profile_id` (the carrier's cost) |
+| `billing_carriers` | `trunk` → `in_billing_profile_id`, `out_billing_profile_id` (the carrier's cost). Without an incoming profile, incoming calls cost the carrier nothing (`carrier_cost` 0) |
 | `tenant_balances` | Daily and monthly totals per tenant and direction: calls, `billsec`, `cost`, `carrier_cost` |
 | `cdr_report` (view) | One line per tagged leg: agent, destination, time, `duration` (seconds), `duration_human` (`00h 01m 05s`), direction, destination name, `cost`, `carrier_cost`, `margin` |
 
@@ -292,7 +292,7 @@ avr-rater:
 | `ignored` | Not answered, no `billsec`, `internal`, or untagged (legs from before migration 0009 too) |
 | `failed_no_tenant` | No `tenant_id`, or the tenant has no profile for this direction in `billing_tenants` |
 | `failed_no_fee` | No fee of the tenant's profile matches the number |
-| `failed_no_carrier` / `failed_no_carrier_fee` | The same for the carrier (`billing_carriers`, by `trunk`) |
+| `failed_no_carrier` / `failed_no_carrier_fee` | The same for the carrier (`billing_carriers`, by `trunk`): no row for the trunk, no outgoing profile, or no matching fee |
 
 ```bash
 avr-rate --retry-failed              # after adding a tenant or a fee: rate the failed_* legs again

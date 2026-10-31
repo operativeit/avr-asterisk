@@ -5,7 +5,8 @@
 // Every answered in/out leg is rated twice, on its billsec and its number
 // (dst, E.164 without +):
 //   cost          the tenant's price: billing_tenants.<direction>_billing_profile_id
-//   carrier_cost  the carrier's cost: billing_carriers (by trunk).<direction>_billing_profile_id
+//   carrier_cost  the carrier's cost: billing_carriers (by trunk).<direction>_billing_profile_id;
+//                 0 for an incoming leg when the carrier has no incoming profile
 // In a profile the fee whose regular expression is the longest wins.
 //
 // rating_status: ok, ignored (not answered, no billsec, internal or no
@@ -130,16 +131,23 @@ final class Rater
                        'zone' => $fee['billing_zone_id'], 'fee' => $fee['id']] + $result;
         }
 
-        $carrierProfile = $this->carriers[$row['trunk'] ?? '']["$direction"] ?? null;
+        $carrier = $this->carriers[$row['trunk'] ?? ''] ?? null;
+        $carrierProfile = $carrier["$direction"] ?? null;
         $carrierFee = $carrierProfile === null ? null : $this->match((int) $carrierProfile, $number);
         if ($carrierFee !== null) {
             $result = ['carrier_cost' => self::price($carrierFee, $billsec), 'carrier_profile' => $carrierProfile,
                        'carrier_zone' => $carrierFee['billing_zone_id'], 'carrier_fee' => $carrierFee['id']] + $result;
         }
+        // A known carrier without an incoming profile does not charge incoming calls.
+        $freeIncoming = $carrier !== null && $carrierProfile === null && $direction === 'in';
+        if ($freeIncoming) {
+            $result['carrier_cost'] = '0.0000';
+        }
 
         $result['status'] = match (true) {
             $profile === null => 'failed_no_tenant',
             $fee === null => 'failed_no_fee',
+            $freeIncoming => 'ok',
             $carrierProfile === null => 'failed_no_carrier',
             $carrierFee === null => 'failed_no_carrier_fee',
             default => 'ok',
