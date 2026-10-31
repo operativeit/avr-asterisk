@@ -5,7 +5,8 @@
 // Every answered in/out leg is rated twice, on its billsec and its number
 // (dst, E.164 without +):
 //   cost          the tenant's price: billing_tenants.<direction>_billing_profile_id
-//   carrier_cost  the carrier's cost: billing_carriers (by trunk).<direction>_billing_profile_id;
+//   carrier_cost  the carrier's cost: billing_carriers.<direction>_billing_profile_id of the
+//                 trunk the leg used (source_trunk for in, destination_trunk for out);
 //                 0 for an incoming leg when the carrier has no incoming profile
 // In a profile the fee whose regular expression is the longest wins.
 //
@@ -83,7 +84,8 @@ final class Rater
         $this->carriers = $this->keyed("SELECT trunk, in_billing_profile_id AS `in`, out_billing_profile_id AS `out`
                                           FROM {$this->billing}.billing_carriers", 'trunk');
 
-        $select = $this->db->prepare("SELECT id, calldate, dst, billsec, disposition, direction, tenant_id, trunk
+        $select = $this->db->prepare("SELECT id, calldate, dst, billsec, disposition, direction, tenant_id,
+                                             source_trunk, destination_trunk
                                         FROM {$this->cdr}.cdr WHERE rating_status = 'unrated'
                                        ORDER BY calldate, id LIMIT " . BATCH);
         $update = $this->db->prepare("UPDATE {$this->cdr}.cdr SET
@@ -131,7 +133,8 @@ final class Rater
                        'zone' => $fee['billing_zone_id'], 'fee' => $fee['id']] + $result;
         }
 
-        $carrier = $this->carriers[$row['trunk'] ?? ''] ?? null;
+        $trunk = $direction === 'in' ? $row['source_trunk'] : $row['destination_trunk'];
+        $carrier = $this->carriers[$trunk ?? ''] ?? null;
         $carrierProfile = $carrier["$direction"] ?? null;
         $carrierFee = $carrierProfile === null ? null : $this->match((int) $carrierProfile, $number);
         if ($carrierFee !== null) {

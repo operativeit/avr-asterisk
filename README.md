@@ -231,7 +231,8 @@ Every call leg is tagged in the CDR at call time and rated afterwards, twice: wh
 | `tenant_id` | provision: `ddis.tenant_uuid` (the incoming extension runs `Set(CDR(tenant_id)=…)` before the `Dial`), or `accounts.tenant_uuid` (the endpoint's `set_var=__TENANT_ID=…`, copied by the dialplan) |
 | `agent_id` | provision: `ddis.agent_uuid` (`Set(CDR(agent_id)=…)`) or `accounts.agent_uuid` (`set_var=__AGENT_ID=…`) |
 | `direction` | dialplan: `in` (`from-trunk`), `out` (to a carrier), `internal` |
-| `trunk` | dialplan: the provision account of the carrier (`${CHANNEL(endpoint)}` on incoming calls, the trunk dialled on outgoing ones) |
+| `source_trunk` | dialplan: the provision account of the carrier the call came in on (`${CHANNEL(endpoint)}` in `from-trunk` / `from-whatsapp`) |
+| `destination_trunk` | dialplan: the provision account of the carrier the call went out on (the trunk `outgoing` dials). A transfer's `out` leg has both |
 | `linkedid` | Asterisk: the same for every leg of one call |
 
 ```sql
@@ -244,7 +245,7 @@ The dialplan sets the rest (see `tests/billing/test-extensions.conf`):
 ```
 [from-trunk]
 exten => _X.,1,Set(CDR(direction)=in)
- same => n,Set(CDR(trunk)=${CHANNEL(endpoint)})
+ same => n,Set(CDR(source_trunk)=${CHANNEL(endpoint)})
  ...
 [from-phones]
 exten => _X.,1,ExecIf($["${TENANT_ID}" != ""]?Set(CDR(tenant_id)=${TENANT_ID}))
@@ -256,7 +257,7 @@ exten => _X.,1,ExecIf($["${TENANT_ID}" != ""]?Set(CDR(tenant_id)=${TENANT_ID}))
  same => n,Goto(internal,${EXTEN},1)
 [outgoing]
 exten => _[6-9]XXXXXXXX,1,Goto(outgoing,34${EXTEN},1)   ; dst in E.164: it is the rated number
-exten => _34X.,1,Set(CDR(trunk)=carrier1)
+exten => _34X.,1,Set(CDR(destination_trunk)=carrier1)
  same => n,Dial(PJSIP/${EXTEN}@carrier1)
 ```
 
@@ -292,7 +293,7 @@ avr-rater:
 | `ignored` | Not answered, no `billsec`, `internal`, or untagged (legs from before migration 0009 too) |
 | `failed_no_tenant` | No `tenant_id`, or the tenant has no profile for this direction in `billing_tenants` |
 | `failed_no_fee` | No fee of the tenant's profile matches the number |
-| `failed_no_carrier` / `failed_no_carrier_fee` | The same for the carrier (`billing_carriers`, by `trunk`): no row for the trunk, no outgoing profile, or no matching fee |
+| `failed_no_carrier` / `failed_no_carrier_fee` | The same for the carrier (`billing_carriers`, by `source_trunk` for `in`, `destination_trunk` for `out`): no row for the trunk, no outgoing profile, or no matching fee |
 
 ```bash
 avr-rate --retry-failed              # after adding a tenant or a fee: rate the failed_* legs again

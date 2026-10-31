@@ -21,7 +21,7 @@ is() { [ "$1" = "$2" ]; }
 sql()  { "${DC[@]}" exec -T avr-asterisk-db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" exec mysql -uasterisk -N "$@"' sh "$@" 2>&1; }
 ast()  { "${DC[@]}" exec -T "${2:-avr-asterisk}" asterisk -rx "$1" 2>&1; }
 rate() { "${DC[@]}" exec -T avr-asterisk avr-rate "$@" 2>&1; }
-wait_for() { local desc="$1"; shift; for _ in $(seq 1 30); do if "$@" >/dev/null 2>&1; then ok "$desc"; return; fi; sleep 1; done; fail "$desc"; }
+wait_for() { local desc="$1"; shift; for _ in $(seq 1 120); do if "$@" >/dev/null 2>&1; then ok "$desc"; return; fi; sleep 1; done; fail "$desc"; }
 
 T1=11111111-1111-1111-1111-111111111111
 T2=22222222-2222-2222-2222-222222222222
@@ -47,7 +47,8 @@ echo "  building the image and starting the environment..."
 ready() { ast "odbc show cdr" | grep -q "active connections: 1"; }
 wait_for "Asterisk connected to the databases" ready
 check "cdr_adaptive_odbc loaded, cdr_odbc gone" bash -c "docker compose -f $PWD/compose.yml exec -T avr-asterisk asterisk -rx 'module show like cdr_' | grep -q cdr_adaptive_odbc && ! docker compose -f $PWD/compose.yml exec -T avr-asterisk ls /usr/lib/asterisk/modules/cdr_odbc.so"
-check "migrations 0009-0011 applied" is "$(sql asterisk -e "SELECT COUNT(*) FROM schema_migrations WHERE version IN ('0009-cdr-billing.sql', '0010-provision-tenant.sql', '0011-billing.sql')")" 3
+check "migrations 0009-0011 and 0013 applied" is "$(sql asterisk -e "SELECT COUNT(*) FROM schema_migrations WHERE version IN ('0009-cdr-billing.sql', '0010-provision-tenant.sql', '0011-billing.sql', '0013-cdr-trunks.sql')")" 4
+check "trunk replaced by source_trunk and destination_trunk" is "$(sql cdr -e "SELECT GROUP_CONCAT(column_name ORDER BY column_name) FROM information_schema.columns WHERE table_schema = 'cdr' AND table_name = 'cdr' AND column_name LIKE '%trunk'")" "destination_trunk,source_trunk"
 check "cdr, cdr_archives and cdr_swap have the same columns" is \
     "$(sql cdr -e "SELECT COUNT(DISTINCT cols) FROM (SELECT table_name, GROUP_CONCAT(column_name, column_type, IFNULL(column_default, '') ORDER BY ordinal_position) cols FROM information_schema.columns WHERE table_schema = 'cdr' AND table_name IN ('cdr', 'cdr_archives', 'cdr_swap') GROUP BY table_name) t")" 1
 
@@ -81,15 +82,16 @@ ast "channel originate PJSIP/2002@ours application Wait 4" phone >/dev/null     
 legs() { [ "$(sql cdr -e "SELECT COUNT(*) FROM cdr WHERE direction IS NOT NULL")" -ge 7 ]; }
 wait_for "7 tagged CDR legs written" legs
 sleep 2
-sql cdr -e "SELECT direction, dst, tenant_id, agent_id, trunk, disposition, billsec, rating_status FROM cdr WHERE direction IS NOT NULL ORDER BY calldate, id" >work/legs.txt
+sql cdr -e "SELECT direction, dst, tenant_id, agent_id, source_trunk, destination_trunk, disposition, billsec, rating_status FROM cdr WHERE direction IS NOT NULL ORDER BY calldate, id" >work/legs.txt
 
-check "ddi to account: in, tenant, carrier trunk" is "$(cdr "CONCAT_WS(' ', tenant_id, IFNULL(agent_id, '-'), trunk, disposition)" "dst = '34968000001'")" "$T1 - carrier1 ANSWERED"
+check "ddi to account: in, tenant, source trunk" is "$(cdr "CONCAT_WS(' ', tenant_id, IFNULL(agent_id, '-'), source_trunk, IFNULL(destination_trunk, '-'), disposition)" "dst = '34968000001'")" "$T1 - carrier1 - ANSWERED"
 check "ddi to agent: in, tenant and agent" is "$(cdr "CONCAT_WS(' ', direction, tenant_id, agent_id)" "dst = '34968000002'")" "in $T2 $A2"
 check "transfer: in leg to the agent, then out leg, same tenant" is \
     "$(cdr "CONCAT_WS(' ', direction, tenant_id, agent_id, dst)" "uniqueid = (SELECT uniqueid FROM cdr WHERE dst = '34968000003' LIMIT 1)" | tr '\n' '|')" \
     "in $T1 $A1 34968000003|out $T1 $A1 34600111222|"
 check "transfer legs share the linkedid" is "$(sql cdr -e "SELECT COUNT(DISTINCT linkedid) FROM cdr WHERE direction IS NOT NULL AND tenant_id = '$T1' AND agent_id = '$A1' AND dst IN ('34968000003', '34600111222')")" 1
-check "outgoing: tenant from the endpoint, dst in E.164" is "$(cdr "CONCAT_WS(' ', direction, tenant_id, trunk, disposition)" "dst = '34968123456'")" "out $T1 carrier1 ANSWERED"
+check "transfer out leg: came in on one trunk, went out on another" is "$(cdr "CONCAT_WS(' ', source_trunk, destination_trunk)" "dst = '34600111222'")" "carrier1 carrier1"
+check "outgoing: tenant from the endpoint, dst in E.164, destination trunk" is "$(cdr "CONCAT_WS(' ', direction, tenant_id, IFNULL(source_trunk, '-'), destination_trunk, disposition)" "dst = '34968123456'")" "out $T1 - carrier1 ANSWERED"
 check "internal call: direction internal, tenant of the caller" is "$(cdr "CONCAT_WS(' ', direction, tenant_id, IFNULL(agent_id, '-'))" "dst = '2002'")" "internal $T1 -"
 check "new legs wait as unrated" is "$(sql cdr -e "SELECT COUNT(*) FROM cdr WHERE rating_status <> 'unrated'")" 0
 
