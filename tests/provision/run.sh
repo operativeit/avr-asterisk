@@ -20,6 +20,7 @@ ok()   { printf '  \033[32mok\033[0m    %s\n' "$1"; passed=$((passed + 1)); }
 fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; failed=$((failed + 1)); }
 check() { local desc="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$desc"; else fail "$desc"; fi; }
 section() { printf '\n== %s\n' "$1"; }
+is() { [ "$1" = "$2" ]; }
 
 # As the application user, so the provision grants are tested too.
 sql()  { "${DC[@]}" exec -T avr-asterisk-db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" exec mysql -uasterisk -N "$@"' sh "$@" 2>&1; }
@@ -58,7 +59,7 @@ wait_ready() {
 
 section "Migrations applied by the entrypoint (empty database)"
 check "Asterisk started and connected to the database" wait_ready
-check "all migrations recorded" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
+check "all migrations recorded" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql,0008-provision-max-contacts.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
 check "databases cdr, recordings and provision exist" grep -qx 3 <(root -e "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name IN ('cdr','recordings','provision')")
 check "no cdr or recordings table left in asterisk" grep -qx 0 <(root -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='asterisk' AND table_name IN ('cdr','recordings')")
 check "cdr ODBC connection up" grep -q "active connections: 1" <(ast "odbc show cdr")
@@ -97,6 +98,13 @@ ast "pjsip send register *all" phone >/dev/null
 sleep 6
 wait_for "phone registered 2001 over UDP" bash -c "docker compose -f $PWD/compose.yml exec -T avr-asterisk asterisk -rx 'pjsip show contacts' | grep -q '2001/sip:2001@172.31.251.12:5060 '"
 wait_for "phone registered 2002 over TCP" bash -c "docker compose -f $PWD/compose.yml exec -T avr-asterisk asterisk -rx 'pjsip show contacts' | grep -qi '2002/sip:2002@172.31.251.12:[0-9]*;transport=tc'"
+check "local accounts default to max_contacts 5" is "$(sql asterisk -e "SELECT max_contacts FROM ps_aors WHERE id='2001'")" 5
+contacts_2001() { sql asterisk -e "SELECT COUNT(*) FROM ps_contacts WHERE endpoint='2001'"; }
+sql provision -e "UPDATE accounts SET callerid = 'Front desk <2001>' WHERE name = '2001'" >/dev/null
+check "an UPDATE (caller ID) keeps the registered phone" is "$(contacts_2001):$(sql asterisk -e "SELECT callerid FROM ps_endpoints WHERE id='2001'")" "1:Front desk <2001>"
+sql provision -e "UPDATE accounts SET enabled = 0 WHERE name = '2002'" >/dev/null
+check "disabling drops its contacts" is "$(sql asterisk -e "SELECT COUNT(*) FROM ps_contacts WHERE endpoint='2002'")" 0
+sql provision -e "UPDATE accounts SET enabled = 1 WHERE name = '2002'" >/dev/null
 
 section "External extension (registration queued for the API)"
 sql provision -e "INSERT INTO accounts (name, type, host, username, password, agent_uuid)
@@ -193,7 +201,7 @@ root_old_schema="$PWD/work/old-init"
 OLD_SCHEMA_DIR="$root_old_schema" "${DC[@]}" up -d avr-asterisk-db avr-asterisk >work/up-old.log 2>&1 || { cat work/up-old.log; exit 1; }
 check "Asterisk started on the old database" wait_ready
 check "0001 recorded as already applied" grep -q "existing database: recording 0001-asterisk.sql as applied" <("${DC[@]}" logs --no-log-prefix avr-asterisk 2>&1)
-check "0002-0007 applied on top" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
+check "0002-0008 applied on top" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql,0008-provision-max-contacts.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
 sql provision -e "INSERT INTO accounts (name, type, password) VALUES ('3001', 'local', 'p3001')" >/dev/null
 check "provision works on the old database" grep -qx 1 <(sql asterisk -e "SELECT COUNT(*) FROM ps_endpoints WHERE id='3001'")
 
