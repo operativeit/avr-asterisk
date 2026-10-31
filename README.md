@@ -112,6 +112,7 @@ You can override these configurations by mounting your own configuration files t
 
 - `TZ`: Timezone (default: Europe/Rome)
 - `ASTERISK_COUNTRY`: Default country for indication tones (dial, busy, ring...) in `indications.conf`, as a two-letter code such as `es`, `fr` or `it` (default: `us`). Unknown codes are ignored with a warning.
+- `ASTERISK_LANGUAGE`: Default language of the prompts (`defaultlanguage` in `asterisk.conf`), such as `es`, `fr` or `pt_BR` (default: `en`). Endpoints with their own `language` keep it. The prompts must be in `/var/lib/asterisk/sounds/<language>/`; otherwise Asterisk plays the English ones and the container logs a warning.
 - `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`: database server, realtime database and application user.
 - `MYSQL_ROOT_PASSWORD`: lets the container create and migrate the databases at startup (see [Databases](#databases)). Without it, migrations are skipped.
 - `CDR_DATABASE` (default `cdr`), `RECORDINGS_DATABASE` (default `recordings`), `PROVISION_DATABASE` (default `provision`): names of the other databases.
