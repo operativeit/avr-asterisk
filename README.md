@@ -211,7 +211,7 @@ INSERT INTO ddis (ddi, agent_uuid) VALUES ('+34968000678', '01a13595-4f65-7d9c-8
 - A `local` account without `password` gets a generated one: 16 characters from a cryptographically secure source (`RANDOM_BYTES`), with at least one lowercase letter, uppercase letter, digit and symbol. Symbols are limited to `! % * + - . ^ _ ~`, which need no quoting in phone configs, `.env` files, URLs or shells. Asterisk only stores its hash (`md5_cred`); `provision.accounts` keeps it readable.
 - `transport` (`udp`, `tcp`, `tls`) and `port` (any) describe the remote side of `external`, `trunk` and `whatsapp` accounts; defaults are `udp` (`tls` for WhatsApp) and 5060 (5061 with `tls`).
 - Default contexts: `local` → `from-phones`, `external` → `internal`, `trunk` → `from-trunk`, `whatsapp` → `from-whatsapp`.
-- `agent_uuid` adds `internal/<username>` → `GoSub(avr,<agent_uuid>,1(avr-core:5001))`. DDIs become `incoming/<ddi>` → `Dial(PJSIP/<account>,…)` or `Dial(local/<agent_uuid>@internal,…)`.
+- `agent_uuid` adds `internal/<username>` → `GoSub(avr,<agent_uuid>,1(avr-core:5001))`. DDIs become `incoming/<ddi>` → `Dial(PJSIP/<account>,…)` or, for a `local` account, the endpoints it has: `Dial(PJSIP/<account>&PJSIP/<account>-webrtc,…)` with `wss` among other transports, `Dial(PJSIP/<account>-webrtc,…)` when `wss` is its only transport (changing `transports` rewrites its DDIs); or `Dial(local/<agent_uuid>@internal,…)`.
 - The dialplan must provide those contexts: `internal` and `incoming` with `switch => Realtime/@`, and `from-trunk` / `from-whatsapp` going to `incoming` for known DDIs.
 - `UPDATE` regenerates the rows and keeps the devices already registered; `enabled=0` or `DELETE` removes them (and their registrations); `name` and `type` cannot change; accounts with DDIs cannot be deleted. Invalid rows fail with a `provision: …` error and nothing is written; names already used in Asterisk are refused.
 - **Outbound registrations** (`external`, `trunk` with `register=1`): Asterisk starts a new realtime registration only once it loads it (`pjsip show registration <name>-reg`; `pjsip send register` fails with "Unable to retrieve registration" until then) and renews it by itself afterwards; a deleted one keeps running until `pjsip send unregister <name>-reg`. The triggers queue these actions in `provision.registration_queue` (`processed_at IS NULL`) for an external worker.
@@ -383,7 +383,8 @@ VALUES ('wa-main', 'whatsapp', '+34968000678', 'meta-sip-password', 'crm.example
 **DDIs** (become `incoming/<ddi>` in the realtime dialplan; trunk and WhatsApp calls follow them)
 
 ```sql
--- To an account, recorded on answer (record=1 by default)
+-- To an account, recorded on answer (record=1 by default); rings every endpoint of a local account
+-- (1000 and, with wss in its transports, 1000-webrtc)
 INSERT INTO ddis (ddi, account) VALUES ('34968012704', '1000');
 
 -- To an account, without recording and ringing for 20 seconds
