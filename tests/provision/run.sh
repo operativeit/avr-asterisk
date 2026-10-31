@@ -34,11 +34,17 @@ rejects() { local out; out="$(sql provision -e "$1")"; grep -q "$2" <<<"$out"; }
 dialplan_log() { "${DC[@]}" exec -T avr-asterisk cat /var/log/asterisk/provision-test.log 2>/dev/null; }
 wait_for() { local desc="$1"; shift; for _ in $(seq 1 20); do if "$@" >/dev/null 2>&1; then ok "$desc"; return; fi; sleep 1; done; fail "$desc"; }
 
+# One run at a time: the project name and subnet are fixed, so runs from other
+# worktrees would recreate each other's containers.
+LOCK=/tmp/avr-asterisk-provision-test.lock
+until mkdir "$LOCK" 2>/dev/null; do echo "  waiting for another run to finish ($LOCK)"; sleep 10; done
+
 cleanup() {
     if [ -z "${KEEP:-}" ]; then
         "${DC[@]}" down -v --remove-orphans >/dev/null 2>&1
         rm -rf work
     fi
+    rmdir "$LOCK"
 }
 trap cleanup EXIT
 
@@ -105,6 +111,35 @@ check "an UPDATE (caller ID) keeps the registered phone" is "$(contacts_2001):$(
 sql provision -e "UPDATE accounts SET enabled = 0 WHERE name = '2002'" >/dev/null
 check "disabling drops its contacts" is "$(sql asterisk -e "SELECT COUNT(*) FROM ps_contacts WHERE endpoint='2002'")" 0
 sql provision -e "UPDATE accounts SET enabled = 1 WHERE name = '2002'" >/dev/null
+
+section "WebRTC (2003 over wss)"
+# webrtc=yes implies the DTLS/ICE settings (applied on realtime objects too).
+ep="$(ast "pjsip show endpoint 2003-webrtc")"
+for f in "webrtc +: yes" "transport +: transport-wss" "allow +: \(opus\|alaw\|ulaw\)" "media_encryption +: dtls" \
+         "dtls_auto_generate_cert +: Yes" "dtls_setup +: actpass" "dtls_verify +: Yes" "dtls_fingerprint +: SHA-256" \
+         "ice_support +: true" "use_avpf +: true" "rtcp_mux +: true" "bundle +: true" "media_use_received_transport +: true"; do
+    check "2003-webrtc ${f/ +: / = }" grep -qE "^ *$f\$" <<<"$ep"
+done
+check "plain endpoint 2003 stays without media encryption" grep -qE "^ *media_encryption +: no$" <(ast "pjsip show endpoint 2003")
+pw2003="$(sql provision -e "SELECT password FROM accounts WHERE name='2003'")"
+in_browser() { "${DC[@]}" exec -T browser "$@"; }
+wss_contact() { is "$(sql asterisk -e "SELECT COUNT(*) FROM ps_contacts WHERE endpoint='$1' AND uri LIKE '%transport=ws%'")" 1; }
+wait_for "browser helper ready" in_browser test -f /ready
+"${DC[@]}" exec -d browser bash /webrtc-client.sh 2003-webrtc "$pw2003" /tmp/webrtc.log
+wait_for "browser registers as 2003-webrtc over wss" in_browser grep -qx "REGISTER 200" /tmp/webrtc.log
+check "its contact lands on endpoint 2003-webrtc" wss_contact 2003-webrtc
+ast "channel originate PJSIP/2003-webrtc application Wait 3" >/dev/null
+wait_for "call to 2003-webrtc offers DTLS-SRTP" in_browser grep -q "UDP/TLS/RTP/SAVPF" /tmp/webrtc.log
+offer="$(in_browser cat /tmp/webrtc.log)"
+check "with fingerprint, actpass, ICE and rtcp-mux" bash -c 'grep -q "^a=fingerprint:SHA-256" <<<"$1" && grep -q "^a=setup:actpass" <<<"$1" && grep -q "^a=ice-ufrag" <<<"$1" && grep -q "^a=rtcp-mux" <<<"$1"' _ "$offer"
+check "and opus" grep -q "^a=rtpmap:[0-9]* opus/48000" <<<"$offer"
+# The reported problem: a browser using the plain username registers fine over
+# wss, but Asterisk picks the endpoint by username, not by transport.
+"${DC[@]}" exec -d browser bash /webrtc-client.sh 2003 "$pw2003" /tmp/plain.log
+wait_for "browser with username 2003 also registers over wss" in_browser grep -qx "REGISTER 200" /tmp/plain.log
+check "but lands on the plain endpoint 2003" wss_contact 2003
+ast "channel originate PJSIP/2003 application Wait 3" >/dev/null
+wait_for "whose call offers plain RTP/AVP, which browsers reject" in_browser grep -q "^m=audio [0-9]* RTP/AVP " /tmp/plain.log
 
 section "External extension (registration queued for the API)"
 sql provision -e "INSERT INTO accounts (name, type, host, username, password, agent_uuid)
