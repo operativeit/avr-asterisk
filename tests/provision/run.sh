@@ -65,7 +65,7 @@ wait_ready() {
 
 section "Migrations applied by the entrypoint (empty database)"
 check "Asterisk started and connected to the database" wait_ready
-check "all migrations recorded" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql,0008-provision-max-contacts.sql,0009-cdr-billing.sql,0010-provision-tenant.sql,0011-billing.sql,0012-provision-ddi-webrtc.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
+check "all migrations recorded" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql,0008-provision-max-contacts.sql,0009-cdr-billing.sql,0010-provision-tenant.sql,0011-billing.sql,0012-provision-ddi-webrtc.sql,0013-provision-internal-dial.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
 check "databases cdr, recordings and provision exist" grep -qx 3 <(root -e "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name IN ('cdr','recordings','provision')")
 check "no cdr or recordings table left in asterisk" grep -qx 0 <(root -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='asterisk' AND table_name IN ('cdr','recordings')")
 check "cdr ODBC connection up" grep -q "active connections: 1" <(ast "odbc show cdr")
@@ -231,6 +231,29 @@ root provision -e "CALL refresh_account_ddis(NULL)" >/dev/null
 check "refresh_account_ddis rewrites existing ddis" is "$(ddi_dial 34968000005)" 'PJSIP/2005&PJSIP/2005-webrtc,30,U(start-recording-on-answer^${UUID})'
 check "and leaves agent ddis alone" grep -q "local/$AGENT@internal" <(ddi_dial 34968000002)
 
+section "Internal calls between local accounts"
+internal_row() { sql asterisk -e "SELECT CONCAT(app, ':', appdata) FROM extensions WHERE context='internal' AND exten='$1'"; }
+check "2001 (udp) gets internal/2001 → Dial(PJSIP/2001)" is "$(internal_row 2001)" "Dial:PJSIP/2001,30"
+check "2005 (udp,wss) rings both endpoints" is "$(internal_row 2005)" "Dial:PJSIP/2005&PJSIP/2005-webrtc,30"
+check "an agent account keeps its GoSub (ext128)" grep -q "^GoSub:avr,$AGENT2" <(internal_row ext128)
+check "a local account cannot take an agent's internal extension" rejects "INSERT INTO accounts (name, type) VALUES ('ext128', 'local')" "internal already has an extension"
+"${DC[@]}" exec -T phone sh -c ': >/var/log/asterisk/sip.log'
+in_browser sh -c ': >/tmp/b2005.log'
+ast "channel originate PJSIP/2005@ours application Wait 3" phone >/dev/null
+wait_for "phone 2001 calling 2005 rings the browser (2005-webrtc)" in_browser grep -q "^INVITE sip:2005-webrtc@" /tmp/b2005.log
+wait_for "and the phone (2005)" phone_got "INVITE sip:2005@172.31.251.12"
+check "dialplan ran internal Dial(PJSIP/2005&PJSIP/2005-webrtc)" grep -q "2005@internal:1\] Dial(.*PJSIP/2005&PJSIP/2005-webrtc" <(dialplan_log)
+sql provision -e "UPDATE accounts SET transports = 'wss' WHERE name = '2004'" >/dev/null
+check "transports change rewrites it (2004 to wss)" is "$(internal_row 2004)" "Dial:PJSIP/2004-webrtc,30"
+sql provision -e "UPDATE accounts SET agent_uuid = '$AGENT' WHERE name = '2004'" >/dev/null
+check "adding an agent replaces it with the GoSub" grep -q "^GoSub:avr,$AGENT" <(internal_row 2004)
+sql provision -e "UPDATE accounts SET agent_uuid = NULL WHERE name = '2004'" >/dev/null
+check "removing the agent brings the Dial back" is "$(internal_row 2004)" "Dial:PJSIP/2004-webrtc,30"
+sql provision -e "UPDATE accounts SET enabled = 0 WHERE name = '2004'" >/dev/null
+check "disabling removes it" is "$(internal_row 2004)" ""
+sql provision -e "UPDATE accounts SET enabled = 1 WHERE name = '2004'" >/dev/null
+check "re-enabling restores it" is "$(internal_row 2004)" "Dial:PJSIP/2004-webrtc,30"
+
 section "Registering trunk"
 sql provision -e "INSERT INTO accounts (name, type, host, register, username, password, transport)
                   VALUES ('voip1', 'trunk', 'sip.provider.example', 1, 'acct1', 'secret1', 'tls');" >/dev/null
@@ -264,6 +287,7 @@ check "ddi re-pointed to 2002" grep -q "PJSIP/2002," <(sql asterisk -e "SELECT a
 sql provision -e "DELETE FROM ddis WHERE ddi='34968000001'; DELETE FROM accounts WHERE name='2001'" >/dev/null
 check "ddi delete removes its dialplan row" grep -qx 0 <(sql asterisk -e "SELECT COUNT(*) FROM extensions WHERE context='incoming' AND exten='34968000001'")
 check "account delete removes endpoint, aor, auth, contacts" grep -qx 0 <(sql asterisk -e "SELECT (SELECT COUNT(*) FROM ps_endpoints WHERE id='2001') + (SELECT COUNT(*) FROM ps_aors WHERE id='2001') + (SELECT COUNT(*) FROM ps_auths WHERE id='2001') + (SELECT COUNT(*) FROM ps_contacts WHERE endpoint='2001')")
+check "and its internal extension" is "$(internal_row 2001)" ""
 sql provision -e "DELETE FROM accounts WHERE name='pbx128'" >/dev/null
 check "deleting the external account queues unregister" grep -qx 1 <(sql provision -e "SELECT COUNT(*) FROM registration_queue WHERE account='pbx128' AND action='unregister'")
 check "and removes its agent row" grep -qx 0 <(sql asterisk -e "SELECT COUNT(*) FROM extensions WHERE context='internal' AND exten='ext128'")
@@ -278,7 +302,7 @@ root_old_schema="$PWD/work/old-init"
 OLD_SCHEMA_DIR="$root_old_schema" "${DC[@]}" up -d avr-asterisk-db avr-asterisk >work/up-old.log 2>&1 || { cat work/up-old.log; exit 1; }
 check "Asterisk started on the old database" wait_ready
 check "0001 recorded as already applied" grep -q "existing database: recording 0001-asterisk.sql as applied" <("${DC[@]}" logs --no-log-prefix avr-asterisk 2>&1)
-check "0002-0012 applied on top" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql,0008-provision-max-contacts.sql,0009-cdr-billing.sql,0010-provision-tenant.sql,0011-billing.sql,0012-provision-ddi-webrtc.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
+check "0002-0013 applied on top" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql,0008-provision-max-contacts.sql,0009-cdr-billing.sql,0010-provision-tenant.sql,0011-billing.sql,0012-provision-ddi-webrtc.sql,0013-provision-internal-dial.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
 sql provision -e "INSERT INTO accounts (name, type, password) VALUES ('3001', 'local', 'p3001')" >/dev/null
 check "provision works on the old database" grep -qx 1 <(sql asterisk -e "SELECT COUNT(*) FROM ps_endpoints WHERE id='3001'")
 
