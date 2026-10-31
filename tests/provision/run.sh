@@ -59,7 +59,7 @@ wait_ready() {
 
 section "Migrations applied by the entrypoint (empty database)"
 check "Asterisk started and connected to the database" wait_ready
-check "all migrations recorded" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql,0008-provision-max-contacts.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
+check "all migrations recorded" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql,0008-provision-max-contacts.sql,0009-cdr-billing.sql,0010-provision-tenant.sql,0011-billing.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
 check "databases cdr, recordings and provision exist" grep -qx 3 <(root -e "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name IN ('cdr','recordings','provision')")
 check "no cdr or recordings table left in asterisk" grep -qx 0 <(root -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='asterisk' AND table_name IN ('cdr','recordings')")
 check "cdr ODBC connection up" grep -q "active connections: 1" <(ast "odbc show cdr")
@@ -150,7 +150,7 @@ sleep 6
 out="$(dialplan_log)"
 check "carrier identified by IP (from-trunk)" grep -q "34968000001@from-trunk:1" <<<"$out"
 check "ddi 34968000001 dials PJSIP/2001" grep -q "34968000001@incoming:1\] Dial(.*PJSIP/2001" <<<"$out"
-check "ddi 34968000002 goes to the agent" grep -q "34968000002@incoming:1\] Dial(.*local/$AGENT@internal" <<<"$out"
+check "ddi 34968000002 goes to the agent" grep -q "34968000002@incoming:2\] Dial(.*local/$AGENT@internal" <<<"$out"
 cdr_seen() { [ "$(sql cdr -e "SELECT COUNT(*) FROM cdr WHERE dst IN ('34968000001', '34968000002')")" -ge 1 ]; }
 wait_for "CDRs written to the cdr database" cdr_seen
 
@@ -169,7 +169,7 @@ ast "channel originate Local/wa@call-wa application Wait 3" meta >/dev/null
 sleep 6
 out="$(dialplan_log)"
 check "call with the header identified as wa1 (from-whatsapp)" grep -q "+34968000678@from-whatsapp:1" <<<"$out"
-check "whatsapp number follows its ddi to the agent" grep -q "+34968000678@incoming:1\] Dial(.*local/$AGENT2@internal" <<<"$out"
+check "whatsapp number follows its ddi to the agent" grep -q "+34968000678@incoming:2\] Dial(.*local/$AGENT2@internal" <<<"$out"
 
 section "Updates and deletes"
 old_md5="$(sql asterisk -e "SELECT md5_cred FROM ps_auths WHERE id='2001'")"
@@ -201,7 +201,7 @@ root_old_schema="$PWD/work/old-init"
 OLD_SCHEMA_DIR="$root_old_schema" "${DC[@]}" up -d avr-asterisk-db avr-asterisk >work/up-old.log 2>&1 || { cat work/up-old.log; exit 1; }
 check "Asterisk started on the old database" wait_ready
 check "0001 recorded as already applied" grep -q "existing database: recording 0001-asterisk.sql as applied" <("${DC[@]}" logs --no-log-prefix avr-asterisk 2>&1)
-check "0002-0008 applied on top" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql,0008-provision-max-contacts.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
+check "0002-0011 applied on top" grep -qx "0001-asterisk.sql,0002-cdr.sql,0003-recordings.sql,0004-provision.sql,0005-provision-strong-passwords.sql,0006-cdr-partitions.sql,0007-recordings-partitions.sql,0008-provision-max-contacts.sql,0009-cdr-billing.sql,0010-provision-tenant.sql,0011-billing.sql" <(root asterisk -e "SELECT GROUP_CONCAT(version ORDER BY version) FROM schema_migrations")
 sql provision -e "INSERT INTO accounts (name, type, password) VALUES ('3001', 'local', 'p3001')" >/dev/null
 check "provision works on the old database" grep -qx 1 <(sql asterisk -e "SELECT COUNT(*) FROM ps_endpoints WHERE id='3001'")
 

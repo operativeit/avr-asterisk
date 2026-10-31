@@ -115,7 +115,7 @@ You can override these configurations by mounting your own configuration files t
 - `ASTERISK_LANGUAGE`: Default language of the prompts (`defaultlanguage` in `asterisk.conf`), such as `es`, `fr` or `pt_BR` (default: `en`). Endpoints with their own `language` keep it. The prompts must be in `/var/lib/asterisk/sounds/<language>/`; otherwise Asterisk plays the English ones and the container logs a warning.
 - `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`: database server, realtime database and application user.
 - `MYSQL_ROOT_PASSWORD`: lets the container create and migrate the databases at startup (see [Databases](#databases)). Without it, migrations are skipped.
-- `CDR_DATABASE` (default `cdr`), `RECORDINGS_DATABASE` (default `recordings`), `PROVISION_DATABASE` (default `provision`): names of the other databases.
+- `CDR_DATABASE` (default `cdr`), `RECORDINGS_DATABASE` (default `recordings`), `PROVISION_DATABASE` (default `provision`), `BILLING_DATABASE` (default `billing`): names of the other databases.
 - `DB_MIGRATE=no`: skip the migrations (for example when they are managed elsewhere).
 - `DB_MIGRATE_TIMEOUT` (default `120`): seconds to wait for MySQL before failing.
 
@@ -126,9 +126,10 @@ At startup, before Asterisk, `entrypoint.sh` runs `avr-db-migrate`, which applie
 | Database | Content |
 |---|---|
 | `MYSQL_DATABASE` (`asterisk`) | Realtime configuration: PJSIP (`ps_*`), dialplan (`extensions`), queues, voicemail |
-| `CDR_DATABASE` (`cdr`) | Call detail records, written by `cdr_odbc` through a second ODBC connection named `cdr` |
+| `CDR_DATABASE` (`cdr`) | Call detail records, written by `cdr_adaptive_odbc` through a second ODBC connection named `cdr` |
 | `RECORDINGS_DATABASE` (`recordings`) | Call recording metadata |
 | `PROVISION_DATABASE` (`provision`) | Accounts, trunks and DDIs created with one `INSERT` (below) |
+| `BILLING_DATABASE` (`billing`) | Price lists, tenants, carriers and balances for CDR rating (below) |
 
 A database created before migrations existed already has the realtime schema: `0001-asterisk.sql` is recorded as applied without running, and the newer migrations are applied on top. Old `cdr` / `recordings` tables in the realtime database are left untouched.
 
@@ -217,6 +218,87 @@ INSERT INTO ddis (ddi, agent_uuid) VALUES ('+34968000678', '01a13595-4f65-7d9c-8
 - PJSIP cannot restrict per endpoint the transport a request arrives on: `transports` decides which endpoints exist, not which transport is accepted.
 
 `tests/provision/run.sh` builds the image and checks the migrations (empty and existing databases), every account type, DDIs and CDRs against helper Asterisk containers.
+
+### Billing: tenants, CDR tags and rating
+
+Every call leg is tagged in the CDR at call time and rated afterwards, twice: what the tenant pays and what the carrier charges, so the margin of each call is known.
+
+**Tags** (written by `cdr_adaptive_odbc`, which fills every `cdr` column named like a CDR variable):
+
+| Column | Set by |
+|---|---|
+| `tenant_id` | provision: `ddis.tenant_uuid` (the incoming extension runs `Set(CDR(tenant_id)=…)` before the `Dial`), or `accounts.tenant_uuid` (the endpoint's `set_var=__TENANT_ID=…`, copied by the dialplan) |
+| `agent_id` | provision: `ddis.agent_uuid` (`Set(CDR(agent_id)=…)`) or `accounts.agent_uuid` (`set_var=__AGENT_ID=…`) |
+| `direction` | dialplan: `in` (`from-trunk`), `out` (to a carrier), `internal` |
+| `trunk` | dialplan: the provision account of the carrier (`${CHANNEL(endpoint)}` on incoming calls, the trunk dialled on outgoing ones) |
+| `linkedid` | Asterisk: the same for every leg of one call |
+
+```sql
+INSERT INTO ddis (ddi, agent_uuid, tenant_uuid) VALUES ('34968000002', '<agent uuid>', '<tenant uuid>');
+INSERT INTO accounts (name, type, tenant_uuid) VALUES ('2001', 'local', '<tenant uuid>');
+```
+
+The dialplan sets the rest (see `tests/billing/test-extensions.conf`):
+
+```
+[from-trunk]
+exten => _X.,1,Set(CDR(direction)=in)
+ same => n,Set(CDR(trunk)=${CHANNEL(endpoint)})
+ ...
+[from-phones]
+exten => _X.,1,ExecIf($["${TENANT_ID}" != ""]?Set(CDR(tenant_id)=${TENANT_ID}))
+ same => n,ExecIf($["${AGENT_ID}" != ""]?Set(CDR(agent_id)=${AGENT_ID}))
+ same => n,GotoIf($[${DIALPLAN_EXISTS(internal,${EXTEN},1)}]?internal)
+ same => n,Set(CDR(direction)=out)
+ same => n,Goto(outgoing,${EXTEN},1)
+ same => n(internal),Set(CDR(direction)=internal)
+ same => n,Goto(internal,${EXTEN},1)
+[outgoing]
+exten => _[6-9]XXXXXXXX,1,Goto(outgoing,34${EXTEN},1)   ; dst in E.164: it is the rated number
+exten => _34X.,1,Set(CDR(trunk)=carrier1)
+ same => n,Dial(PJSIP/${EXTEN}@carrier1)
+```
+
+Asterisk writes one CDR per pair of channels in a bridge. A call the agent transfers to an outside number leaves two legs with the same `uniqueid` and `linkedid`: `in` (caller ↔ agent) and `out` (caller ↔ outside number, with `Set(CDR(direction)=out)` before going to `outgoing`). The `out` leg keeps the CDR variables of the first one, so it is billed to the same tenant and agent. Legs of Local channels carry no tags and are ignored.
+
+**Prices** (database `BILLING_DATABASE`, default `billing`):
+
+| Table | Content |
+|---|---|
+| `billing_profiles` | Price lists |
+| `billing_zones` | Destination names of a profile (`zone`, `detail`) |
+| `billing_fees` | `destination`: regular expression on the E.164 number without `+` (`^34[67].*$`); the longest expression of the profile wins. One price: `init_rate` for the first `init_interval` seconds, then `follow_rate` per `follow_interval` seconds; rates per minute |
+| `billing_tenants` | `tenant_id` → `in_billing_profile_id`, `out_billing_profile_id` (the tenant's price) |
+| `billing_carriers` | `trunk` → `in_billing_profile_id`, `out_billing_profile_id` (the carrier's cost) |
+| `tenant_balances` | Daily and monthly totals per tenant and direction: calls, `billsec`, `cost`, `carrier_cost` |
+| `cdr_report` (view) | One line per tagged leg: agent, destination, time, `duration` (seconds), `duration_human` (`00h 01m 05s`), direction, destination name, `cost`, `carrier_cost`, `margin` |
+
+The image ships the tables, not the prices: load your own price lists.
+
+**Rating:** `avr-rate` (PHP, in the image) rates every answered `in`/`out` leg on its `billsec` and its `dst`, then rebuilds the balances of the days and months it touched. Run it as a separate service from the same image:
+
+```yaml
+avr-rater:
+  image: operativeit/avr-asterisk
+  command: ["avr-rate", "--loop=60"]
+  environment: [DB_MIGRATE=no, MYSQL_HOST=…, MYSQL_USER=…, MYSQL_PASSWORD=…]
+```
+
+| `rating_status` | Meaning |
+|---|---|
+| `unrated` | Waiting for `avr-rate` (new legs) |
+| `ok` | `cost` and `carrier_cost` set |
+| `ignored` | Not answered, no `billsec`, `internal`, or untagged (legs from before migration 0009 too) |
+| `failed_no_tenant` | No `tenant_id`, or the tenant has no profile for this direction in `billing_tenants` |
+| `failed_no_fee` | No fee of the tenant's profile matches the number |
+| `failed_no_carrier` / `failed_no_carrier_fee` | The same for the carrier (`billing_carriers`, by `trunk`) |
+
+```bash
+avr-rate --retry-failed              # after adding a tenant or a fee: rate the failed_* legs again
+avr-rate --rerate-from=2026-10-01    # prices changed: rate again every leg since that day
+```
+
+`tests/billing/run.sh` places real calls (DDI to an account and to an agent, a transfer, an outgoing and an internal call) and checks the tags, the prices, the balances and the view.
 
 #### SQL examples
 
