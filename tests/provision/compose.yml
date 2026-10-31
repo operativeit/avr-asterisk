@@ -89,6 +89,14 @@ services:
     networks:
       net: { ipv4_address: 172.31.251.15 }
 
+  browser:   # WebRTC client: registers over wss (webrtc-client.sh)
+    image: alpine:3.20
+    command: ["sh", "-c", "apk add -q --no-cache bash websocat && touch /ready && exec sleep infinity"]
+    volumes:
+      - ./webrtc-client.sh:/webrtc-client.sh:ro
+    networks:
+      net: { ipv4_address: 172.31.251.16 }
+
 networks:
   net:
     ipam:
