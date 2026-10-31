@@ -1,0 +1,288 @@
+#!/usr/bin/env php
+<?php
+// Rate the CDRs and keep the tenant balances (see db/migrations/0011-billing.sql).
+//
+// Every answered in/out leg is rated twice, on its billsec and its number
+// (dst, E.164 without +):
+//   cost          the tenant's price: billing_tenants.<direction>_billing_profile_id
+//   carrier_cost  the carrier's cost: billing_carriers (by trunk).<direction>_billing_profile_id
+// In a profile the fee whose regular expression is the longest wins.
+//
+// rating_status: ok, ignored (not answered, no billsec, internal or no
+// direction), failed_no_tenant, failed_no_fee, failed_no_carrier,
+// failed_no_carrier_fee. After each batch the daily and monthly balances of
+// the tenants and days involved are rebuilt from the rated CDRs.
+//
+//   avr-rate                       rate the pending CDRs and exit
+//   avr-rate --loop=60             keep rating, every 60 seconds
+//   avr-rate --retry-failed        rate the failed_* CDRs again (after adding fees)
+//   avr-rate --rerate-from=DATE    rate again every CDR since DATE (prices changed)
+//
+// Connects as MYSQL_USER to MYSQL_HOST, databases CDR_DATABASE (cdr) and
+// BILLING_DATABASE (billing).
+
+declare(strict_types=1);
+
+const BATCH = 500;
+
+function out(string $message): void
+{
+    fwrite(STDOUT, date('Y-m-d H:i:s') . " avr-rate: $message\n");
+}
+
+function identifier(string $name): string
+{
+    if (!preg_match('/^[A-Za-z0-9_]+$/', $name)) {
+        throw new RuntimeException("invalid database name '$name'");
+    }
+    return "`$name`";
+}
+
+final class Rater
+{
+    private PDO $db;
+    private string $cdr;
+    private string $billing;
+    /** @var array<int, array<int, list<array<string, mixed>>>> fees by profile, by first digit */
+    private array $fees = [];
+    private array $tenants = [];
+    private array $carriers = [];
+
+    public function __construct()
+    {
+        $host = getenv('MYSQL_HOST') ?: 'localhost';
+        $port = getenv('MYSQL_PORT') ?: '3306';
+        $this->cdr = identifier(getenv('CDR_DATABASE') ?: 'cdr');
+        $this->billing = identifier(getenv('BILLING_DATABASE') ?: 'billing');
+        $this->db = new PDO("mysql:host=$host;port=$port;charset=utf8mb4", getenv('MYSQL_USER') ?: 'asterisk',
+            getenv('MYSQL_PASSWORD') ?: '', [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    }
+
+    public function retryFailed(): int
+    {
+        return $this->db->exec("UPDATE {$this->cdr}.cdr SET rating_status = 'unrated'
+                                 WHERE rating_status IN ('failed_no_tenant', 'failed_no_fee', 'failed_no_carrier', 'failed_no_carrier_fee')");
+    }
+
+    public function rerateFrom(string $date): int
+    {
+        $stmt = $this->db->prepare("UPDATE {$this->cdr}.cdr SET rating_status = 'unrated'
+                                     WHERE calldate >= ? AND rating_status <> 'unrated'");
+        $stmt->execute([$date]);
+        return $stmt->rowCount();
+    }
+
+    /** Rate every pending CDR; returns how many were rated. */
+    public function run(): int
+    {
+        // Prices may have changed since the last run.
+        $this->fees = [];
+        $this->tenants = $this->keyed("SELECT tenant_id, in_billing_profile_id AS `in`, out_billing_profile_id AS `out`
+                                         FROM {$this->billing}.billing_tenants", 'tenant_id');
+        $this->carriers = $this->keyed("SELECT trunk, in_billing_profile_id AS `in`, out_billing_profile_id AS `out`
+                                          FROM {$this->billing}.billing_carriers", 'trunk');
+
+        $select = $this->db->prepare("SELECT id, calldate, dst, billsec, disposition, direction, tenant_id, trunk
+                                        FROM {$this->cdr}.cdr WHERE rating_status = 'unrated'
+                                       ORDER BY calldate, id LIMIT " . BATCH);
+        $update = $this->db->prepare("UPDATE {$this->cdr}.cdr SET
+                cost = :cost, billing_profile_id = :profile, billing_zone_id = :zone, billing_fee_id = :fee,
+                carrier_cost = :carrier_cost, carrier_billing_profile_id = :carrier_profile,
+                carrier_billing_zone_id = :carrier_zone, carrier_billing_fee_id = :carrier_fee,
+                rating_status = :status, rated_at = NOW()
+            WHERE calldate = :calldate AND id = :id");
+
+        $total = 0;
+        do {
+            $select->execute();
+            $rows = $select->fetchAll(PDO::FETCH_ASSOC);
+            $touched = [];
+            $this->db->beginTransaction();
+            foreach ($rows as $row) {
+                $update->execute($this->rate($row) + ['calldate' => $row['calldate'], 'id' => $row['id']]);
+                if ($row['tenant_id'] !== null && in_array($row['direction'], ['in', 'out'], true)) {
+                    $touched[$row['tenant_id'] . '|' . substr($row['calldate'], 0, 10)] = true;
+                }
+            }
+            $this->db->commit();
+            $this->balances(array_keys($touched));
+            $total += count($rows);
+        } while (count($rows) === BATCH);
+        return $total;
+    }
+
+    /** @return array<string, mixed> the columns to write */
+    private function rate(array $row): array
+    {
+        $result = ['cost' => null, 'profile' => null, 'zone' => null, 'fee' => null, 'carrier_cost' => null,
+                   'carrier_profile' => null, 'carrier_zone' => null, 'carrier_fee' => null, 'status' => 'ignored'];
+        $direction = $row['direction'];
+        $billsec = (int) $row['billsec'];
+        if (!in_array($direction, ['in', 'out'], true) || $row['disposition'] !== 'ANSWERED' || $billsec <= 0) {
+            return $result;
+        }
+        $number = ltrim((string) $row['dst'], '+');
+
+        $profile = $this->tenants[$row['tenant_id'] ?? '']["$direction"] ?? null;
+        $fee = $profile === null ? null : $this->match((int) $profile, $number);
+        if ($fee !== null) {
+            $result = ['cost' => self::price($fee, $billsec), 'profile' => $profile,
+                       'zone' => $fee['billing_zone_id'], 'fee' => $fee['id']] + $result;
+        }
+
+        $carrierProfile = $this->carriers[$row['trunk'] ?? '']["$direction"] ?? null;
+        $carrierFee = $carrierProfile === null ? null : $this->match((int) $carrierProfile, $number);
+        if ($carrierFee !== null) {
+            $result = ['carrier_cost' => self::price($carrierFee, $billsec), 'carrier_profile' => $carrierProfile,
+                       'carrier_zone' => $carrierFee['billing_zone_id'], 'carrier_fee' => $carrierFee['id']] + $result;
+        }
+
+        $result['status'] = match (true) {
+            $profile === null => 'failed_no_tenant',
+            $fee === null => 'failed_no_fee',
+            $carrierProfile === null => 'failed_no_carrier',
+            $carrierFee === null => 'failed_no_carrier_fee',
+            default => 'ok',
+        };
+        return $result;
+    }
+
+    /** Price of a leg: the first interval at init_rate, the rest in follow_interval steps. */
+    private static function price(array $fee, int $billsec): string
+    {
+        $init = max(1, (int) $fee['init_interval']);
+        $follow = max(1, (int) $fee['follow_interval']);
+        $rest = max(0, $billsec - $init);
+        $cost = (float) $fee['init_rate'] * $init / 60
+              + (float) $fee['follow_rate'] * (int) ceil($rest / $follow) * $follow / 60;
+        return number_format($cost, 4, '.', '');
+    }
+
+    /** The fee of a profile matching the number: the longest expression wins. */
+    private function match(int $profile, string $number): ?array
+    {
+        if (!isset($this->fees[$profile])) {
+            $this->fees[$profile] = $this->loadFees($profile);
+        }
+        foreach ($this->fees[$profile][$number[0] ?? ''] ?? $this->fees[$profile][''] as $fee) {
+            if (preg_match($fee['regex'], $number)) {
+                return $fee;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Fees of a profile, longest expression first, split by the first digit
+     * they can match so a number is only tried against its candidates. An
+     * expression that does not start with a literal digit (^.+$) is a
+     * candidate for every digit.
+     */
+    private function loadFees(int $profile): array
+    {
+        $stmt = $this->db->prepare("SELECT id, billing_zone_id, destination, init_rate, init_interval,
+                                           follow_rate, follow_interval
+                                      FROM {$this->billing}.billing_fees
+                                     WHERE billing_profile_id = ? AND type = 'call'
+                                     ORDER BY CHAR_LENGTH(destination) DESC, id");
+        $stmt->execute([$profile]);
+        $buckets = array_fill_keys(['', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'], []);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $fee) {
+            $fee['regex'] = '~' . str_replace('~', '\~', $fee['destination']) . '~';
+            if (@preg_match($fee['regex'], '') === false) {
+                out("fee {$fee['id']}: invalid expression '{$fee['destination']}', skipped");
+                continue;
+            }
+            $digit = preg_match('/^\^([0-9])/', $fee['destination'], $m) ? $m[1] : null;
+            foreach (array_keys($buckets) as $key) {
+                // PHP turns the keys '0'..'9' into integers.
+                if ($key !== '' && ($digit === null || $digit === (string) $key)) {
+                    $buckets[$key][] = $fee;
+                }
+            }
+            if ($digit === null) {
+                $buckets[''][] = $fee;
+            }
+        }
+        return $buckets;
+    }
+
+    /** Rebuild the daily and monthly balances of "tenant|YYYY-MM-DD" keys. */
+    private function balances(array $keys): void
+    {
+        $sum = "SELECT tenant_id, %s, direction, COUNT(*), SUM(billsec), SUM(cost), COALESCE(SUM(carrier_cost), 0)
+                  FROM {$this->cdr}.cdr
+                 WHERE tenant_id = :tenant AND calldate >= :from AND calldate < :to
+                   AND rating_status = 'ok' AND direction IN ('in', 'out')
+                 GROUP BY direction";
+        $upsert = "INSERT INTO {$this->billing}.tenant_balances
+                          (tenant_id, period, start, direction, calls, billsec, cost, carrier_cost) %s
+                   ON DUPLICATE KEY UPDATE calls = VALUES(calls), billsec = VALUES(billsec),
+                                           cost = VALUES(cost), carrier_cost = VALUES(carrier_cost)";
+        $clear = $this->db->prepare("DELETE FROM {$this->billing}.tenant_balances
+                                      WHERE tenant_id = :tenant AND period = :period AND start = :start");
+        $daily = $this->db->prepare(sprintf($upsert, sprintf($sum, "'daily', :start")));
+        $monthly = $this->db->prepare(sprintf($upsert, sprintf($sum, "'monthly', :start")));
+        $months = [];
+        foreach ($keys as $key) {
+            [$tenant, $day] = explode('|', $key);
+            $next = date('Y-m-d', strtotime("$day +1 day"));
+            $clear->execute(['tenant' => $tenant, 'period' => 'daily', 'start' => $day]);
+            $daily->execute(['tenant' => $tenant, 'start' => $day, 'from' => $day, 'to' => $next]);
+            $months[$tenant . '|' . substr($day, 0, 7) . '-01'] = true;
+        }
+        foreach (array_keys($months) as $key) {
+            [$tenant, $month] = explode('|', $key);
+            $next = date('Y-m-d', strtotime("$month +1 month"));
+            $clear->execute(['tenant' => $tenant, 'period' => 'monthly', 'start' => $month]);
+            $monthly->execute(['tenant' => $tenant, 'start' => $month, 'from' => $month, 'to' => $next]);
+        }
+    }
+
+    private function keyed(string $sql, string $key): array
+    {
+        $rows = [];
+        foreach ($this->db->query($sql)->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $rows[$row[$key]] = $row;
+        }
+        return $rows;
+    }
+}
+
+$options = getopt('', ['loop:', 'retry-failed', 'rerate-from:', 'help']);
+if (isset($options['help'])) {
+    fwrite(STDOUT, "usage: avr-rate [--loop=SECONDS] [--retry-failed] [--rerate-from=YYYY-MM-DD]\n");
+    exit(0);
+}
+$loop = isset($options['loop']) ? max(1, (int) $options['loop']) : 0;
+if (isset($options['rerate-from']) && !preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) $options['rerate-from'])) {
+    fwrite(STDERR, "avr-rate: --rerate-from needs a date such as 2026-10-01\n");
+    exit(2);
+}
+
+do {
+    try {
+        $rater = new Rater();
+        if (isset($options['retry-failed'])) {
+            out($rater->retryFailed() . ' failed CDRs queued again');
+            unset($options['retry-failed']);
+        }
+        if (isset($options['rerate-from'])) {
+            out($rater->rerateFrom((string) $options['rerate-from']) . " CDRs since {$options['rerate-from']} queued again");
+            unset($options['rerate-from']);
+        }
+        $rated = $rater->run();
+        if ($rated > 0 || !$loop) {
+            out("$rated CDRs rated");
+        }
+    } catch (Throwable $e) {
+        fwrite(STDERR, date('Y-m-d H:i:s') . ' avr-rate: ERROR: ' . $e->getMessage() . "\n");
+        if (!$loop) {
+            exit(1);
+        }
+    }
+    $rater = null;
+    if ($loop) {
+        sleep($loop);
+    }
+} while ($loop);

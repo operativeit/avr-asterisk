@@ -4,8 +4,9 @@
 # in <MYSQL_DATABASE>.schema_migrations.
 #
 # Needs root (it creates databases, triggers and grants): MYSQL_ROOT_PASSWORD.
-# Database names come from MYSQL_DATABASE, CDR_DATABASE, RECORDINGS_DATABASE
-# and PROVISION_DATABASE; the application user (MYSQL_USER) gets access to them.
+# Database names come from MYSQL_DATABASE, CDR_DATABASE, RECORDINGS_DATABASE,
+# PROVISION_DATABASE and BILLING_DATABASE; the application user (MYSQL_USER)
+# gets access to them.
 set -euo pipefail
 
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-/usr/share/avr-asterisk/migrations}"
@@ -21,10 +22,11 @@ asterisk_db="${MYSQL_DATABASE:-asterisk}"
 cdr_db="${CDR_DATABASE:-cdr}"
 recordings_db="${RECORDINGS_DATABASE:-recordings}"
 provision_db="${PROVISION_DATABASE:-provision}"
+billing_db="${BILLING_DATABASE:-billing}"
 app_user="${MYSQL_USER:-asterisk}"
 
 # The names end up in SQL; accept identifiers only.
-for name in "$asterisk_db" "$cdr_db" "$recordings_db" "$provision_db"; do
+for name in "$asterisk_db" "$cdr_db" "$recordings_db" "$provision_db" "$billing_db"; do
     [[ "$name" =~ ^[A-Za-z0-9_]+$ ]] || die "invalid database name '$name'"
 done
 [[ "$app_user" =~ ^[A-Za-z0-9_.-]+$ ]] || die "invalid MYSQL_USER '$app_user'"
@@ -60,6 +62,7 @@ for file in "$MIGRATIONS_DIR"/*.sql; do
     log "applying $version"
     sed -e "s/{{asterisk_db}}/$asterisk_db/g" -e "s/{{cdr_db}}/$cdr_db/g" \
         -e "s/{{recordings_db}}/$recordings_db/g" -e "s/{{provision_db}}/$provision_db/g" \
+        -e "s/{{billing_db}}/$billing_db/g" \
         -e "s/{{app_user}}/$app_user/g" "$file" | sql "$asterisk_db" ||
         die "$version failed"
     sql "$asterisk_db" -e "INSERT INTO schema_migrations (version) VALUES ('$version')"
