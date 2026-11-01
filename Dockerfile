@@ -308,8 +308,6 @@ RUN set -ex; \
     apt-get clean; rm -rf /var/lib/apt/lists/*
 COPY db/migrations /usr/share/avr-asterisk/migrations
 COPY db/avr-db-migrate /usr/local/bin/avr-db-migrate
-# CDR rating (run by a separate service: avr-rate --loop=60).
-COPY bin/avr-rate /usr/local/bin/avr-rate
 
 COPY entrypoint.sh /entrypoint.sh
 

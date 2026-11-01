@@ -7,7 +7,7 @@
 --   direction            in, out or internal
 --   trunk                provision account of the carrier the call used
 --   linkedid             groups the legs of one call (transfers)
--- Written later by avr-rate, with the tenant's price and the carrier's cost
+-- Written later by the rating (elokia-billing), with the tenant's price and the carrier's cost
 -- of the leg (billsec), so the margin is cost - carrier_cost:
 --   cost, billing_*_id, carrier_cost, carrier_billing_*_id, rating_status, rated_at
 -- export_status / exported_at are for the export to the invoicing system.
