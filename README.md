@@ -130,7 +130,7 @@ At startup, before Asterisk, `entrypoint.sh` runs `avr-db-migrate`, which applie
 | `RECORDINGS_DATABASE` (`recordings`) | Call recording metadata |
 | `PROVISION_DATABASE` (`provision`) | Accounts, trunks and DDIs created with one `INSERT` (below) |
 
-A database created before migrations existed already has the realtime schema: `0001-asterisk.sql` is recorded as applied without running, and the newer migrations are applied on top. Old `cdr` / `recordings` tables in the realtime database are left untouched.
+There is one migration per database: `0001-asterisk.sql` (realtime), `0002-cdr.sql`, `0003-recordings.sql` and `0004-provision.sql`. They were squashed before any data had to be kept, so a database created by an older image (with `0005`-`0014` recorded) or before migrations existed (a realtime schema without `schema_migrations`) is refused with an error: recreate it.
 
 Demo data (endpoints `1000`/`1001`, a trunk, a queue) is in `db/seed/demo.sql`; it is not applied automatically.
 
@@ -171,9 +171,8 @@ SELECT event_schema, event_name, status, last_executed FROM information_schema.e
 - **Late rows** (a CDR of 31 December written after midnight, a recording of an archived month) still insert: they land in the main table's first day partition and reach their own day in the archive at the next archiving.
 - **`recordings.uuid`** is unique together with `created_at` (MySQL requires the partitioning column in every unique key). Writers must give a recording a fixed `created_at` per call, so that a retry hits the key and `ON DUPLICATE KEY UPDATE` applies; elokia-infra's `save_recording.php` uses the call start.
 - Recording partitions are on `UNIX_TIMESTAMP(created_at)`: day boundaries follow the MySQL server time zone when they are created, so do not change it afterwards.
-- On a database created before 0006/0007, existing rows are moved once to their final place (main table or archive); rows already older than the retention period are not kept.
 
-`tests/cdr/run.sh` and `tests/recordings/run.sh` simulate the calendar (partition creation, archiving, late rows, purge, settings, and the conversion of existing tables).
+`tests/cdr/run.sh` and `tests/recordings/run.sh` simulate the calendar (partition creation, archiving, late rows, purge, settings).
 
 ### Provisioning accounts, trunks and DDIs
 
@@ -217,7 +216,7 @@ INSERT INTO ddis (ddi, agent_uuid) VALUES ('+34968000678', '01a13595-4f65-7d9c-8
 - PJSIP cannot restrict per endpoint the transport a request arrives on: `transports` decides which endpoints exist, not which transport is accepted.
 - **WebRTC clients must use `<username>-webrtc`** as SIP user and auth user (same password), e.g. `2003-webrtc` over `wss://<host>:8089/ws`. Asterisk picks the endpoint by username, not by transport: a browser registering as `2003` is accepted over wss too, but lands on the plain endpoint `2003`, whose calls offer plain RTP that browsers (always DTLS-SRTP) reject. `<name>-webrtc` has `webrtc=yes`, which in Asterisk 23 implies `media_encryption=dtls`, `dtls_setup=actpass`, `dtls_verify=fingerprint`, `ice_support`, `use_avpf`, `rtcp_mux`, `bundle` and an auto-generated DTLS certificate. One username cannot serve both endpoints: the registrar also takes the AOR from the username.
 
-`tests/provision/run.sh` builds the image and checks the migrations (empty and existing databases), every account type, DDIs and CDRs against helper Asterisk containers, and a WebRTC registration over wss (`webrtc-client.sh`, bash + websocat).
+`tests/provision/run.sh` builds the image and checks the migrations (an empty database, and one created before migrations refused), every account type, DDIs and CDRs against helper Asterisk containers, and a WebRTC registration over wss (`webrtc-client.sh`, bash + websocat).
 
 ### CDR tags: tenant, agent, direction and trunks
 
@@ -262,7 +261,7 @@ exten => _34X.,1,Set(CDR(destination_trunk)=carrier1)
 
 Asterisk writes one CDR per pair of channels in a bridge. A call the agent transfers to an outside number leaves two legs with the same `uniqueid` and `linkedid`: `in` (caller ↔ agent) and `out` (caller ↔ outside number, with `Set(CDR(direction)=out)` before going to `outgoing`). The `out` leg keeps the CDR variables of the first one, so it is billed to the same tenant and agent. Legs of Local channels carry no tags and are ignored.
 
-**Rating** is not done here: elokia-billing owns the price lists, tenants, carriers and balances (its own database) and writes `cost`, `carrier_cost`, the `billing_*_id` / `carrier_billing_*_id` columns, `rating_status` and `rated_at` of every `in`/`out` leg. New legs start as `rating_status = unrated`.
+**Rating** is not done here: elokia-billing only reads `cdr`, copies the tagged legs to its own database and rates them there (price lists, tenants, carriers, balances). The `cdr` table has the tags only, no rating columns.
 
 `tests/cdr-tags/run.sh` places real calls (DDI to an account and to an agent, a transfer, an outgoing and an internal call) and checks the tags they leave.
 

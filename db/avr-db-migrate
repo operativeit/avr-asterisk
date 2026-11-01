@@ -44,14 +44,18 @@ sql "$asterisk_db" -e "CREATE TABLE IF NOT EXISTS schema_migrations (
     version VARCHAR(255) NOT NULL PRIMARY KEY,
     applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"
 
-# Databases created before migrations existed already have the realtime schema.
-if [ "$(sql -N "$asterisk_db" -e 'SELECT COUNT(*) FROM schema_migrations')" = 0 ] &&
-   [ "$(sql -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$asterisk_db' AND table_name = 'ps_endpoints'")" = 1 ]; then
-    log "existing database: recording 0001-asterisk.sql as applied"
-    sql "$asterisk_db" -e "INSERT INTO schema_migrations (version) VALUES ('0001-asterisk.sql')"
-fi
-
 applied="$(sql -N "$asterisk_db" -e 'SELECT version FROM schema_migrations')"
+
+# The migrations were squashed: a database migrated by an older image records
+# versions this image does not ship, and would skip the new 0002-0004.
+while read -r version; do
+    [ -z "$version" ] || [ -e "$MIGRATIONS_DIR/$version" ] ||
+        die "$asterisk_db.schema_migrations has $version, which this image does not ship: the database was created by an older image (migrations squashed); recreate it"
+done <<<"$applied"
+if [ -z "$applied" ] &&
+   [ "$(sql -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$asterisk_db' AND table_name = 'ps_endpoints'")" = 1 ]; then
+    die "$asterisk_db already has a realtime schema but no migrations recorded: recreate the database"
+fi
 pending=0
 for file in "$MIGRATIONS_DIR"/*.sql; do
     [ -e "$file" ] || continue

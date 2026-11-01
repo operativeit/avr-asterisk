@@ -10,6 +10,29 @@
 -- "pjsip send unregister <id>". The triggers queue those actions in
 -- provision.registration_queue for an external worker (elokia-asterisk-api).
 --
+-- Local accounts:
+--   * <name> for udp/tcp/tls and <name>-webrtc for wss (WebRTC needs DTLS/ICE
+--     settings that break plain SIP phones); a wss-only account has no <name>.
+--   * Generated passwords: 16 characters from RANDOM_BYTES, with at least one
+--     lowercase letter, uppercase letter, digit and symbol; symbols are limited
+--     to ! % * + - . ^ _ ~ so the password survives phone configs, .env files,
+--     URLs and shells without quoting.
+--   * max_contacts defaults to 5 (several devices; with remove_existing a sixth
+--     replaces the oldest). An UPDATE keeps the registered contacts; they are
+--     deleted only on DELETE or enabled=0.
+--   * internal/<username> dials every endpoint the account has, so the phone
+--     and the browser ring at once; with agent_uuid it goes to the agent.
+--
+-- DDIs dial every endpoint of a local account (PJSIP/<name>&PJSIP/<name>-webrtc,
+-- or only the one that exists); they are rewritten when the account's
+-- transports change.
+--
+-- tenant_uuid on accounts and DDIs tags every CDR with whose call it was (see
+-- 0002-cdr.sql): the incoming extension of a DDI sets CDR(tenant_id) and, for
+-- an agent, CDR(agent_id) before the Dial; an account's endpoint gets set_var
+-- __TENANT_ID / __AGENT_ID, which the dialplan (from-phones) copies to the CDR.
+-- The leading __ keeps them on the channels the call creates.
+--
 -- Applied by avr-db-migrate (entrypoint) as root; {{...}} are replaced with
 -- the configured database names and application user.
 
@@ -33,8 +56,9 @@ CREATE TABLE accounts (
   callerid      VARCHAR(80)  NULL,
   from_user     VARCHAR(40)  NULL,
   from_domain   VARCHAR(255) NULL,
-  max_contacts  INT UNSIGNED NULL COMMENT 'local: devices registered at once, default 1',
+  max_contacts  INT UNSIGNED NULL COMMENT 'local: devices registered at once, default 5',
   agent_uuid    CHAR(36)     NULL COMMENT 'AVR agent answering calls to internal/<username>',
+  tenant_uuid   CHAR(36)     NULL COMMENT 'tenant billed for calls from this account',
   created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (name)
@@ -44,6 +68,7 @@ CREATE TABLE ddis (
   ddi           VARCHAR(32)  NOT NULL,
   account       VARCHAR(40)  NULL COMMENT 'ring this account (Dial PJSIP/<account>)',
   agent_uuid    CHAR(36)     NULL COMMENT 'or send the call to this AVR agent',
+  tenant_uuid   CHAR(36)     NULL COMMENT 'tenant billed for calls to this number',
   ring_timeout  INT UNSIGNED NOT NULL DEFAULT 30,
   record        TINYINT(1)   NOT NULL DEFAULT 1 COMMENT 'account calls: record on answer',
   created_at    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -63,18 +88,75 @@ CREATE TABLE registration_queue (
   PRIMARY KEY (id),
   KEY pending (processed_at, id)
 ) ENGINE=InnoDB;
-
 DELIMITER //
 
--- Remove everything provision created for an account.
-CREATE PROCEDURE remove_account(IN p_name VARCHAR(40), IN p_username VARCHAR(40), IN p_agent CHAR(36))
+-- Uniform random integer in [0, n) from RANDOM_BYTES (32 bits; bias < 1e-7).
+CREATE FUNCTION random_index(n INT) RETURNS INT NOT DETERMINISTIC NO SQL
+BEGIN
+  RETURN CONV(HEX(RANDOM_BYTES(4)), 16, 10) MOD n;
+END//
+
+CREATE FUNCTION random_password(p_length INT) RETURNS VARCHAR(64) NOT DETERMINISTIC NO SQL
+BEGIN
+  DECLARE lower_set  VARCHAR(26) DEFAULT 'abcdefghijklmnopqrstuvwxyz';
+  DECLARE upper_set  VARCHAR(26) DEFAULT 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  DECLARE digit_set  VARCHAR(10) DEFAULT '0123456789';
+  DECLARE symbol_set VARCHAR(9)  DEFAULT '!%*+-.^_~';
+  DECLARE all_set    VARCHAR(80);
+  DECLARE pwd        VARCHAR(64);
+  DECLARE i, j INT;
+  DECLARE c CHAR(1);
+
+  IF p_length < 4 OR p_length > 64 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'provision: password length must be 4-64';
+  END IF;
+  SET all_set = CONCAT(lower_set, upper_set, digit_set, symbol_set);
+
+  -- One character of each class, the rest from all of them...
+  SET pwd = CONCAT(SUBSTRING(lower_set,  random_index(26) + 1, 1),
+                   SUBSTRING(upper_set,  random_index(26) + 1, 1),
+                   SUBSTRING(digit_set,  random_index(10) + 1, 1),
+                   SUBSTRING(symbol_set, random_index(9) + 1, 1));
+  SET i = 4;
+  WHILE i < p_length DO
+    SET pwd = CONCAT(pwd, SUBSTRING(all_set, random_index(CHAR_LENGTH(all_set)) + 1, 1));
+    SET i = i + 1;
+  END WHILE;
+
+  -- ...then shuffled (Fisher-Yates), so the classes are not in fixed positions.
+  SET i = p_length;
+  WHILE i > 1 DO
+    SET j = random_index(i) + 1;
+    SET c = SUBSTRING(pwd, i, 1);
+    SET pwd = INSERT(INSERT(pwd, i, 1, SUBSTRING(pwd, j, 1)), j, 1, c);
+    SET i = i - 1;
+  END WHILE;
+  RETURN pwd;
+END//
+
+-- Dial target of a local account: the endpoints its transports create.
+CREATE FUNCTION account_dial(p_name VARCHAR(40)) RETURNS VARCHAR(100) READS SQL DATA
+BEGIN
+  DECLARE v_transports VARCHAR(20);
+  SELECT transports INTO v_transports FROM accounts WHERE name = p_name;
+  RETURN CONCAT_WS('&',
+    IF(FIND_IN_SET('udp', v_transports) OR FIND_IN_SET('tcp', v_transports) OR FIND_IN_SET('tls', v_transports),
+       CONCAT('PJSIP/', p_name), NULL),
+    IF(FIND_IN_SET('wss', v_transports), CONCAT('PJSIP/', p_name, '-webrtc'), NULL));
+END//
+
+CREATE PROCEDURE remove_account(IN p_name VARCHAR(40), IN p_username VARCHAR(40), IN p_agent CHAR(36),
+                                IN p_drop_contacts TINYINT)
 BEGIN
   DELETE FROM `{{asterisk_db}}`.ps_endpoints       WHERE id IN (p_name, CONCAT(p_name, '-webrtc'));
   DELETE FROM `{{asterisk_db}}`.ps_aors            WHERE id IN (p_name, CONCAT(p_name, '-webrtc'));
   DELETE FROM `{{asterisk_db}}`.ps_auths           WHERE id IN (p_name, CONCAT(p_name, '-auth'), CONCAT(p_name, '-webrtc'));
   DELETE FROM `{{asterisk_db}}`.ps_registrations   WHERE id = CONCAT(p_name, '-reg');
   DELETE FROM `{{asterisk_db}}`.ps_endpoint_id_ips WHERE id = CONCAT(p_name, '-identify');
-  DELETE FROM `{{asterisk_db}}`.ps_contacts        WHERE endpoint IN (p_name, CONCAT(p_name, '-webrtc'));
+  -- Registered devices survive an UPDATE (the AOR is recreated with the same id).
+  IF p_drop_contacts THEN
+    DELETE FROM `{{asterisk_db}}`.ps_contacts WHERE endpoint IN (p_name, CONCAT(p_name, '-webrtc'));
+  END IF;
   IF p_agent IS NOT NULL THEN
     DELETE FROM `{{asterisk_db}}`.extensions
      WHERE context = 'internal' AND exten = p_username AND app = 'GoSub'
@@ -186,7 +268,6 @@ BEGIN
   END IF;
 END//
 
--- Defaults and validation shared by the BEFORE INSERT / BEFORE UPDATE triggers.
 CREATE PROCEDURE prepare_account(INOUT p_name VARCHAR(40), IN p_type VARCHAR(10),
                                  INOUT p_username VARCHAR(40), INOUT p_password VARCHAR(80),
                                  INOUT p_host VARCHAR(255), INOUT p_port SMALLINT UNSIGNED,
@@ -208,11 +289,11 @@ BEGIN
 
   IF p_type = 'local' THEN
     SET p_username = COALESCE(p_username, p_name),
-        p_password = COALESCE(p_password, LEFT(SHA2(CONCAT(RAND(), UUID(), NOW(6)), 256), 24)),
+        p_password = COALESCE(p_password, random_password(16)),
         p_host = NULL, p_port = NULL, p_register = NULL, p_match = NULL, p_transport = NULL,
         p_context = COALESCE(p_context, 'from-phones'),
         p_codecs = COALESCE(p_codecs, 'alaw,ulaw,g722'),
-        p_max_contacts = COALESCE(p_max_contacts, 1);
+        p_max_contacts = COALESCE(p_max_contacts, 5);
     IF p_transports IS NULL OR p_transports = '' THEN
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'provision: local account needs at least one transport';
     END IF;
@@ -249,11 +330,132 @@ BEGIN
   END IF;
 END//
 
+-- DDIs: one row per number in `{{asterisk_db}}`.extensions, context incoming (reached
+-- from from-trunk and from-whatsapp).
+CREATE PROCEDURE prepare_ddi(INOUT p_ddi VARCHAR(32), INOUT p_account VARCHAR(40), INOUT p_agent CHAR(36))
+BEGIN
+  SET p_ddi = TRIM(p_ddi), p_account = NULLIF(TRIM(p_account), ''), p_agent = LOWER(NULLIF(TRIM(p_agent), ''));
+  IF p_ddi IS NULL OR NOT REGEXP_LIKE(p_ddi, '^[+]?[0-9]{3,20}$') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'provision: ddi must be 3-20 digits, optionally starting with +';
+  END IF;
+  IF (p_account IS NULL) = (p_agent IS NULL) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'provision: a ddi needs exactly one of account or agent_uuid';
+  END IF;
+  IF p_agent IS NOT NULL AND NOT REGEXP_LIKE(p_agent, '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'provision: agent_uuid is not a UUID';
+  END IF;
+END//
+
+CREATE PROCEDURE apply_ddi(IN p_ddi VARCHAR(32), IN p_account VARCHAR(40), IN p_agent CHAR(36),
+                           IN p_tenant CHAR(36), IN p_timeout INT, IN p_record TINYINT)
+BEGIN
+  DECLARE v_priority INT DEFAULT 1;
+  DECLARE v_type VARCHAR(10);
+  DECLARE v_transports VARCHAR(20);
+  DECLARE v_dial VARCHAR(100);
+  IF p_tenant IS NOT NULL THEN
+    INSERT INTO `{{asterisk_db}}`.extensions (context, exten, priority, app, appdata)
+      VALUES ('incoming', p_ddi, v_priority, 'Set', CONCAT('CDR(tenant_id)=', p_tenant));
+    SET v_priority = v_priority + 1;
+  END IF;
+  IF p_account IS NOT NULL THEN
+    SELECT type, transports INTO v_type, v_transports FROM accounts WHERE name = p_account;
+    SET v_dial = CONCAT('PJSIP/', p_account);
+    IF v_type = 'local' THEN
+      SET v_dial = CONCAT_WS('&',
+        IF(FIND_IN_SET('udp', v_transports) OR FIND_IN_SET('tcp', v_transports) OR FIND_IN_SET('tls', v_transports),
+           CONCAT('PJSIP/', p_account), NULL),
+        IF(FIND_IN_SET('wss', v_transports), CONCAT('PJSIP/', p_account, '-webrtc'), NULL));
+    END IF;
+    INSERT INTO `{{asterisk_db}}`.extensions (context, exten, priority, app, appdata)
+      VALUES ('incoming', p_ddi, v_priority, 'Dial',
+              CONCAT(v_dial, ',', p_timeout, IF(p_record = 1, ',U(start-recording-on-answer^${UUID})', '')));
+  ELSE
+    INSERT INTO `{{asterisk_db}}`.extensions (context, exten, priority, app, appdata)
+      VALUES ('incoming', p_ddi, v_priority, 'Set', CONCAT('CDR(agent_id)=', p_agent));
+    INSERT INTO `{{asterisk_db}}`.extensions (context, exten, priority, app, appdata)
+      VALUES ('incoming', p_ddi, v_priority + 1, 'Dial', CONCAT('local/', p_agent, '@internal,', p_timeout));
+    -- The agent entry point in internal, unless it already exists.
+    IF NOT EXISTS (SELECT 1 FROM `{{asterisk_db}}`.extensions WHERE context = 'internal' AND exten = p_agent) THEN
+      INSERT INTO `{{asterisk_db}}`.extensions (context, exten, priority, app, appdata)
+        VALUES ('internal', p_agent, 1, 'GoSub', CONCAT('avr,', p_agent, ',1(avr-core:5001)'));
+    END IF;
+  END IF;
+END//
+
+-- Lower-case and validate an optional UUID column.
+CREATE PROCEDURE prepare_uuid(INOUT p_uuid CHAR(36), IN p_column VARCHAR(20))
+BEGIN
+  DECLARE v_message VARCHAR(128);
+  SET p_uuid = LOWER(NULLIF(TRIM(p_uuid), ''));
+  IF p_uuid IS NOT NULL AND NOT REGEXP_LIKE(p_uuid, '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') THEN
+    SET v_message = CONCAT('provision: ', p_column, ' is not a UUID');
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_message;
+  END IF;
+END//
+
+-- Channel variables of the account's endpoints (after apply_account).
+CREATE PROCEDURE apply_account_tags(IN p_name VARCHAR(40))
+BEGIN
+  DECLARE v_tenant, v_agent CHAR(36);
+  DECLARE v_vars VARCHAR(255);
+  SELECT tenant_uuid, agent_uuid INTO v_tenant, v_agent FROM accounts WHERE name = p_name;
+  SET v_vars = CONCAT_WS(';', CONCAT('__TENANT_ID=', v_tenant), CONCAT('__AGENT_ID=', v_agent));
+  IF v_vars <> '' THEN
+    UPDATE `{{asterisk_db}}`.ps_endpoints SET set_var = v_vars WHERE id IN (p_name, CONCAT(p_name, '-webrtc'));
+  END IF;
+END//
+
+-- Rewrite the incoming extensions of the DDIs of an account (NULL: of every account).
+CREATE PROCEDURE refresh_account_ddis(IN p_account VARCHAR(40))
+BEGIN
+  DECLARE v_done TINYINT DEFAULT 0;
+  DECLARE v_ddi VARCHAR(32);
+  DECLARE v_account VARCHAR(40);
+  DECLARE v_tenant CHAR(36);
+  DECLARE v_timeout INT;
+  DECLARE v_record TINYINT;
+  DECLARE c CURSOR FOR
+    SELECT ddi, account, tenant_uuid, ring_timeout, record FROM ddis
+     WHERE account IS NOT NULL AND (p_account IS NULL OR account = p_account);
+  DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_done = 1;
+  OPEN c;
+  ddis: LOOP
+    FETCH c INTO v_ddi, v_account, v_tenant, v_timeout, v_record;
+    IF v_done THEN
+      LEAVE ddis;
+    END IF;
+    DELETE FROM `{{asterisk_db}}`.extensions WHERE context = 'incoming' AND exten = v_ddi;
+    CALL apply_ddi(v_ddi, v_account, NULL, v_tenant, v_timeout, v_record);
+  END LOOP;
+  CLOSE c;
+END//
+
+-- Remove the internal row apply_account_internal wrote for an account.
+CREATE PROCEDURE remove_account_internal(IN p_name VARCHAR(40), IN p_username VARCHAR(40))
+BEGIN
+  DELETE FROM `{{asterisk_db}}`.extensions
+   WHERE context = 'internal' AND exten = p_username AND app = 'Dial'
+     AND appdata IN (CONCAT('PJSIP/', p_name, ',30'), CONCAT('PJSIP/', p_name, '-webrtc,30'),
+                     CONCAT('PJSIP/', p_name, '&PJSIP/', p_name, '-webrtc,30'));
+END//
+
+-- internal/<username> for an enabled local account without agent, unless taken.
+CREATE PROCEDURE apply_account_internal(IN p_name VARCHAR(40))
+BEGIN
+  INSERT INTO `{{asterisk_db}}`.extensions (context, exten, priority, app, appdata)
+    SELECT 'internal', a.username, 1, 'Dial', CONCAT(account_dial(a.name), ',30')
+      FROM accounts a
+     WHERE a.name = p_name AND a.type = 'local' AND a.enabled = 1 AND a.agent_uuid IS NULL
+       AND NOT EXISTS (SELECT 1 FROM `{{asterisk_db}}`.extensions e WHERE e.context = 'internal' AND e.exten = a.username);
+END//
+
 CREATE TRIGGER accounts_before_insert BEFORE INSERT ON accounts FOR EACH ROW
 BEGIN
   CALL prepare_account(NEW.name, NEW.type, NEW.username, NEW.password, NEW.host, NEW.port, NEW.register,
                        NEW.match_ips, NEW.transports, NEW.transport, NEW.context, NEW.codecs,
                        NEW.from_user, NEW.from_domain, NEW.max_contacts, NEW.agent_uuid);
+  CALL prepare_uuid(NEW.tenant_uuid, 'tenant_uuid');
   -- Refuse to take over objects created outside provision (pjsip.conf seeds, manual rows).
   IF EXISTS (SELECT 1 FROM `{{asterisk_db}}`.ps_endpoints WHERE id IN (NEW.name, CONCAT(NEW.name, '-webrtc')))
      OR EXISTS (SELECT 1 FROM `{{asterisk_db}}`.ps_registrations WHERE id = CONCAT(NEW.name, '-reg')) THEN
@@ -272,11 +474,13 @@ BEGIN
   CALL prepare_account(NEW.name, NEW.type, NEW.username, NEW.password, NEW.host, NEW.port, NEW.register,
                        NEW.match_ips, NEW.transports, NEW.transport, NEW.context, NEW.codecs,
                        NEW.from_user, NEW.from_domain, NEW.max_contacts, NEW.agent_uuid);
+  CALL prepare_uuid(NEW.tenant_uuid, 'tenant_uuid');
 END//
 
 CREATE TRIGGER accounts_after_insert AFTER INSERT ON accounts FOR EACH ROW
 BEGIN
   CALL apply_account(NEW.name);
+  CALL apply_account_tags(NEW.name);
   IF NEW.enabled = 1 AND NEW.register = 1 THEN
     INSERT INTO registration_queue (registration_id, account, action) VALUES (CONCAT(NEW.name, '-reg'), NEW.name, 'register');
   END IF;
@@ -284,8 +488,9 @@ END//
 
 CREATE TRIGGER accounts_after_update AFTER UPDATE ON accounts FOR EACH ROW
 BEGIN
-  CALL remove_account(OLD.name, OLD.username, OLD.agent_uuid);
+  CALL remove_account(OLD.name, OLD.username, OLD.agent_uuid, NEW.enabled = 0);
   CALL apply_account(NEW.name);
+  CALL apply_account_tags(NEW.name);
   IF OLD.enabled = 1 AND OLD.register = 1 THEN
     INSERT INTO registration_queue (registration_id, account, action) VALUES (CONCAT(OLD.name, '-reg'), OLD.name, 'unregister');
   END IF;
@@ -296,49 +501,16 @@ END//
 
 CREATE TRIGGER accounts_after_delete AFTER DELETE ON accounts FOR EACH ROW
 BEGIN
-  CALL remove_account(OLD.name, OLD.username, OLD.agent_uuid);
+  CALL remove_account(OLD.name, OLD.username, OLD.agent_uuid, 1);
   IF OLD.enabled = 1 AND OLD.register = 1 THEN
     INSERT INTO registration_queue (registration_id, account, action) VALUES (CONCAT(OLD.name, '-reg'), OLD.name, 'unregister');
-  END IF;
-END//
-
--- DDIs: one row per number in `{{asterisk_db}}`.extensions, context incoming (reached
--- from from-trunk and from-whatsapp).
-CREATE PROCEDURE prepare_ddi(INOUT p_ddi VARCHAR(32), INOUT p_account VARCHAR(40), INOUT p_agent CHAR(36))
-BEGIN
-  SET p_ddi = TRIM(p_ddi), p_account = NULLIF(TRIM(p_account), ''), p_agent = LOWER(NULLIF(TRIM(p_agent), ''));
-  IF p_ddi IS NULL OR NOT REGEXP_LIKE(p_ddi, '^[+]?[0-9]{3,20}$') THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'provision: ddi must be 3-20 digits, optionally starting with +';
-  END IF;
-  IF (p_account IS NULL) = (p_agent IS NULL) THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'provision: a ddi needs exactly one of account or agent_uuid';
-  END IF;
-  IF p_agent IS NOT NULL AND NOT REGEXP_LIKE(p_agent, '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'provision: agent_uuid is not a UUID';
-  END IF;
-END//
-
-CREATE PROCEDURE apply_ddi(IN p_ddi VARCHAR(32), IN p_account VARCHAR(40), IN p_agent CHAR(36),
-                           IN p_timeout INT, IN p_record TINYINT)
-BEGIN
-  IF p_account IS NOT NULL THEN
-    INSERT INTO `{{asterisk_db}}`.extensions (context, exten, priority, app, appdata)
-      VALUES ('incoming', p_ddi, 1, 'Dial',
-              CONCAT('PJSIP/', p_account, ',', p_timeout, IF(p_record = 1, ',U(start-recording-on-answer^${UUID})', '')));
-  ELSE
-    INSERT INTO `{{asterisk_db}}`.extensions (context, exten, priority, app, appdata)
-      VALUES ('incoming', p_ddi, 1, 'Dial', CONCAT('local/', p_agent, '@internal,', p_timeout));
-    -- The agent entry point in internal, unless it already exists.
-    IF NOT EXISTS (SELECT 1 FROM `{{asterisk_db}}`.extensions WHERE context = 'internal' AND exten = p_agent) THEN
-      INSERT INTO `{{asterisk_db}}`.extensions (context, exten, priority, app, appdata)
-        VALUES ('internal', p_agent, 1, 'GoSub', CONCAT('avr,', p_agent, ',1(avr-core:5001)'));
-    END IF;
   END IF;
 END//
 
 CREATE TRIGGER ddis_before_insert BEFORE INSERT ON ddis FOR EACH ROW
 BEGIN
   CALL prepare_ddi(NEW.ddi, NEW.account, NEW.agent_uuid);
+  CALL prepare_uuid(NEW.tenant_uuid, 'tenant_uuid');
   IF EXISTS (SELECT 1 FROM `{{asterisk_db}}`.extensions WHERE context = 'incoming' AND exten = NEW.ddi) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'provision: incoming already has an extension for this ddi';
   END IF;
@@ -347,22 +519,59 @@ END//
 CREATE TRIGGER ddis_before_update BEFORE UPDATE ON ddis FOR EACH ROW
 BEGIN
   CALL prepare_ddi(NEW.ddi, NEW.account, NEW.agent_uuid);
+  CALL prepare_uuid(NEW.tenant_uuid, 'tenant_uuid');
 END//
 
 CREATE TRIGGER ddis_after_insert AFTER INSERT ON ddis FOR EACH ROW
 BEGIN
-  CALL apply_ddi(NEW.ddi, NEW.account, NEW.agent_uuid, NEW.ring_timeout, NEW.record);
+  CALL apply_ddi(NEW.ddi, NEW.account, NEW.agent_uuid, NEW.tenant_uuid, NEW.ring_timeout, NEW.record);
 END//
 
 CREATE TRIGGER ddis_after_update AFTER UPDATE ON ddis FOR EACH ROW
 BEGIN
   DELETE FROM `{{asterisk_db}}`.extensions WHERE context = 'incoming' AND exten = OLD.ddi;
-  CALL apply_ddi(NEW.ddi, NEW.account, NEW.agent_uuid, NEW.ring_timeout, NEW.record);
+  CALL apply_ddi(NEW.ddi, NEW.account, NEW.agent_uuid, NEW.tenant_uuid, NEW.ring_timeout, NEW.record);
 END//
 
 CREATE TRIGGER ddis_after_delete AFTER DELETE ON ddis FOR EACH ROW
 BEGIN
   DELETE FROM `{{asterisk_db}}`.extensions WHERE context = 'incoming' AND exten = OLD.ddi;
+END//
+
+CREATE TRIGGER accounts_after_update_ddis AFTER UPDATE ON accounts FOR EACH ROW FOLLOWS accounts_after_update
+BEGIN
+  IF NOT (NEW.transports <=> OLD.transports) THEN
+    CALL refresh_account_ddis(NEW.name);
+  END IF;
+END//
+
+CREATE TRIGGER accounts_before_insert_internal BEFORE INSERT ON accounts FOR EACH ROW FOLLOWS accounts_before_insert
+BEGIN
+  IF NEW.type = 'local' AND NEW.agent_uuid IS NULL
+     AND EXISTS (SELECT 1 FROM `{{asterisk_db}}`.extensions WHERE context = 'internal' AND exten = NEW.username) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'provision: internal already has an extension with this username';
+  END IF;
+END//
+
+CREATE TRIGGER accounts_after_insert_internal AFTER INSERT ON accounts FOR EACH ROW FOLLOWS accounts_after_insert
+BEGIN
+  CALL apply_account_internal(NEW.name);
+END//
+
+-- Removed before accounts_after_update, which may write the agent GoSub in its place.
+CREATE TRIGGER accounts_before_update_internal BEFORE UPDATE ON accounts FOR EACH ROW FOLLOWS accounts_before_update
+BEGIN
+  CALL remove_account_internal(OLD.name, OLD.username);
+END//
+
+CREATE TRIGGER accounts_after_update_internal AFTER UPDATE ON accounts FOR EACH ROW FOLLOWS accounts_after_update_ddis
+BEGIN
+  CALL apply_account_internal(NEW.name);
+END//
+
+CREATE TRIGGER accounts_after_delete_internal AFTER DELETE ON accounts FOR EACH ROW FOLLOWS accounts_after_delete
+BEGIN
+  CALL remove_account_internal(OLD.name, OLD.username);
 END//
 
 DELIMITER ;

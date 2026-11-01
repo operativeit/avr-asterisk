@@ -1,1 +1,1 @@
-Intentionally empty: the image creates the schema. run.sh mounts an old schema here instead to test existing databases.
+Intentionally empty: the image creates the schema. run.sh mounts a schema created before migrations here to test that it is refused.

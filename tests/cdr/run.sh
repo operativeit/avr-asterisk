@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Test for the CDR partitions (0006-cdr-partitions.sql): day partitions,
-# next-year creation, yearly archiving, purge, pmax and the conversion of an
-# existing unpartitioned table. Time is simulated by calling the procedures
-# the events run with CURDATE() (create_partitions_at, archive_at, purge_at)
-# with other dates.
+# Test for the CDR partitions (0002-cdr.sql): day partitions, next-year
+# creation, yearly archiving, purge, pmax, and a database of an older image
+# (before the migrations were squashed) refused. Time is simulated by calling
+# the procedures the events run with CURDATE() (create_partitions_at,
+# archive_at, purge_at) with other dates.
 #
 #   tests/cdr/run.sh          # leaves nothing running when it ends
 #   KEEP=1 tests/cdr/run.sh   # keep the containers for inspection
@@ -56,7 +56,7 @@ rm -rf work && mkdir work
 
 section "New installation"
 echo "  building the image and starting MySQL..."
-check "migrations applied (0006 included)" start
+check "migrations applied" start
 check "event scheduler is ON" is "$(root -e 'SELECT @@event_scheduler')" ON
 check "event cdr_create_partitions: yearly, 15 December 03:00" is "$(event cdr_create_partitions)" "ENABLED 1 YEAR 12-15 03:00"
 check "event cdr_archive: daily 03:00" grep -qE "^ENABLED 1 DAY [0-9]{2}-[0-9]{2} 03:00$" <<<"$(event cdr_archive)"
@@ -68,7 +68,7 @@ check "cdr next year only from 15 December" is "$(parts cdr $((Y + 1)))" "$expec
 check "cdr and cdr_archives have pmax" is "$(root -e "SELECT COUNT(*) FROM information_schema.partitions WHERE table_schema='cdr' AND partition_name='pmax' AND table_name IN ('cdr','cdr_archives')")" 2
 check "cdr_archives starts with pmin and pmax only" is "$(root -e "SELECT GROUP_CONCAT(partition_name ORDER BY partition_ordinal_position) FROM information_schema.partitions WHERE table_schema='cdr' AND table_name='cdr_archives'")" "pmin,pmax"
 check "primary key (calldate, id)" is "$(root -e "SELECT GROUP_CONCAT(column_name ORDER BY seq_in_index) FROM information_schema.statistics WHERE table_schema='cdr' AND table_name='cdr' AND index_name='PRIMARY'")" "calldate,id"
-check "indexes src/dst/accountcode/tenant/rating/export with calldate, uniqueid, linkedid, id" is "$(root -e "SELECT GROUP_CONCAT(DISTINCT index_name ORDER BY index_name) FROM information_schema.statistics WHERE table_schema='cdr' AND table_name='cdr' AND index_name <> 'PRIMARY'")" "accountcode_calldate,dst_calldate,export_status_calldate,id,linkedid,rating_status_calldate,src_calldate,tenant_calldate,uniqueid"
+check "indexes src/dst/accountcode/tenant with calldate, uniqueid, linkedid, id" is "$(root -e "SELECT GROUP_CONCAT(DISTINCT index_name ORDER BY index_name) FROM information_schema.statistics WHERE table_schema='cdr' AND table_name='cdr' AND index_name <> 'PRIMARY'")" "accountcode_calldate,dst_calldate,id,linkedid,src_calldate,tenant_calldate,uniqueid"
 check "cdr_settings default retention: 4 years" is "$(root cdr -e 'SELECT retention_years FROM cdr_settings')" 4
 
 section "Queries read only the partitions they need"
@@ -132,23 +132,18 @@ check "CDR beyond the partitions lands in pmax" is "$(root cdr -e 'SELECT COUNT(
 create_at "$((Y + 2))-12-15" >/dev/null
 check "creating its year moves it to p$((Y + 3))0601" is "$(root cdr -e "SELECT COUNT(*) FROM cdr PARTITION (p$((Y + 3))0601)"):$(root cdr -e 'SELECT COUNT(*) FROM cdr PARTITION (pmax)')" "1:0"
 
-section "Existing database with an unpartitioned cdr table (like staging)"
+section "Database migrated by an older image (before the squash)"
 "${DC[@]}" down -v >/dev/null 2>&1
 mkdir -p work/init
 {
     echo "CREATE TABLE asterisk.schema_migrations (version VARCHAR(255) NOT NULL PRIMARY KEY, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP);"
-    for v in 0001-asterisk 0002-cdr 0003-recordings 0004-provision 0005-provision-strong-passwords; do
+    for v in 0001-asterisk 0002-cdr 0003-recordings 0004-provision 0005-provision-strong-passwords 0006-cdr-partitions; do
         echo "INSERT INTO asterisk.schema_migrations (version) VALUES ('$v.sql');"
     done
-    sed -e 's/{{cdr_db}}/cdr/g' -e "s/{{app_user}}/asterisk/g" ../../db/migrations/0002-cdr.sql
-    echo "INSERT INTO cdr.cdr (calldate, src, dst, uniqueid) VALUES ('$((Y - 1))-03-10 10:00:00', '100', '200', 'old.1'), ('$((Y - 1))-12-31 23:00:00', '100', '200', 'old.2'), ('$Y-02-01 10:00:00', '100', '200', 'cur.1');"
 } > work/init/01-old.sql
 INIT_DIR="$PWD/work/init" start >/dev/null 2>&1
-check "0006 applied on the existing database" is "$(root -e "SELECT COUNT(*) FROM asterisk.schema_migrations WHERE version='0006-cdr-partitions.sql'")" 1
-check "no unpartitioned table left" is "$(root -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='cdr' AND table_name='cdr_unpartitioned'")" 0
-check "current-year CDR kept in cdr" is "$(rows cdr "$Y")" 1
-check "last year's CDRs archived right away" is "$(rows cdr_archives $((Y - 1)))" 2
-check "ids preserved" is "$(root cdr -e "SELECT GROUP_CONCAT(uniqueid ORDER BY id) FROM (SELECT id, uniqueid FROM cdr UNION ALL SELECT id, uniqueid FROM cdr_archives) a")" "old.1,old.2,cur.1"
+check "refused: recreate the database" grep -q "0005-provision-strong-passwords.sql, which this image does not ship" <("${DC[@]}" logs --no-log-prefix avr-asterisk 2>&1)
+check "nothing applied" is "$(root -e "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = 'cdr'")" 0
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
