@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Test for CDR tagging and rating (0009-cdr-billing, 0010-provision-tenant,
-# 0011-billing, cdr_adaptive_odbc and bin/avr-rate): real calls between a
-# carrier, our Asterisk and a phone, then avr-rate on the CDRs they leave.
+# Test for CDR tagging (0009-cdr-billing, 0010-provision-tenant, 0013-cdr-trunks
+# and cdr_adaptive_odbc): real calls between a carrier, our Asterisk and a
+# phone, then the tags of the CDRs they leave. Rating is done by elokia-billing.
 #
-#   tests/billing/run.sh          # leaves nothing running when it ends
-#   KEEP=1 tests/billing/run.sh   # keep the containers for inspection
+#   tests/cdr-tags/run.sh          # leaves nothing running when it ends
+#   KEEP=1 tests/cdr-tags/run.sh   # keep the containers for inspection
 set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -20,7 +20,6 @@ is() { [ "$1" = "$2" ]; }
 
 sql()  { "${DC[@]}" exec -T avr-asterisk-db sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" exec mysql -uasterisk -N "$@"' sh "$@" 2>&1; }
 ast()  { "${DC[@]}" exec -T "${2:-avr-asterisk}" asterisk -rx "$1" 2>&1; }
-rate() { "${DC[@]}" exec -T avr-asterisk avr-rate "$@" 2>&1; }
 wait_for() { local desc="$1"; shift; for _ in $(seq 1 120); do if "$@" >/dev/null 2>&1; then ok "$desc"; return; fi; sleep 1; done; fail "$desc"; }
 
 T1=11111111-1111-1111-1111-111111111111
@@ -47,7 +46,7 @@ echo "  building the image and starting the environment..."
 ready() { ast "odbc show cdr" | grep -q "active connections: 1"; }
 wait_for "Asterisk connected to the databases" ready
 check "cdr_adaptive_odbc loaded, cdr_odbc gone" bash -c "docker compose -f $PWD/compose.yml exec -T avr-asterisk asterisk -rx 'module show like cdr_' | grep -q cdr_adaptive_odbc && ! docker compose -f $PWD/compose.yml exec -T avr-asterisk ls /usr/lib/asterisk/modules/cdr_odbc.so"
-check "migrations 0009-0011 and 0013 applied" is "$(sql asterisk -e "SELECT COUNT(*) FROM schema_migrations WHERE version IN ('0009-cdr-billing.sql', '0010-provision-tenant.sql', '0011-billing.sql', '0013-cdr-trunks.sql')")" 4
+check "migrations 0009, 0010 and 0013 applied" is "$(sql asterisk -e "SELECT COUNT(*) FROM schema_migrations WHERE version IN ('0009-cdr-billing.sql', '0010-provision-tenant.sql', '0013-cdr-trunks.sql')")" 3
 check "trunk replaced by source_trunk and destination_trunk" is "$(sql cdr -e "SELECT GROUP_CONCAT(column_name ORDER BY column_name) FROM information_schema.columns WHERE table_schema = 'cdr' AND table_name = 'cdr' AND column_name LIKE '%trunk'")" "destination_trunk,source_trunk"
 check "cdr, cdr_archives and cdr_swap have the same columns" is \
     "$(sql cdr -e "SELECT COUNT(DISTINCT cols) FROM (SELECT table_name, GROUP_CONCAT(column_name, column_type, IFNULL(column_default, '') ORDER BY ordinal_position) cols FROM information_schema.columns WHERE table_schema = 'cdr' AND table_name IN ('cdr', 'cdr_archives', 'cdr_swap') GROUP BY table_name) t")" 1
@@ -76,7 +75,7 @@ section "Calls"
 ast "channel originate PJSIP/34968000001@ours application Wait 6" carrier >/dev/null   # ddi to account
 ast "channel originate PJSIP/34968000002@ours application Wait 6" carrier >/dev/null   # ddi to agent
 ast "channel originate PJSIP/34968000003@ours application Wait 12" carrier >/dev/null  # agent, then transfer out
-ast "channel originate PJSIP/34968000004@ours application Wait 6" carrier >/dev/null   # tenant without prices
+ast "channel originate PJSIP/34968000004@ours application Wait 6" carrier >/dev/null   # a third tenant
 ast "channel originate PJSIP/968123456@ours application Wait 6" phone >/dev/null       # outgoing, national number
 ast "channel originate PJSIP/2002@ours application Wait 4" phone >/dev/null            # internal, to an agent
 legs() { [ "$(sql cdr -e "SELECT COUNT(*) FROM cdr WHERE direction IS NOT NULL")" -ge 7 ]; }
@@ -94,66 +93,6 @@ check "transfer out leg: came in on one trunk, went out on another" is "$(cdr "C
 check "outgoing: tenant from the endpoint, dst in E.164, destination trunk" is "$(cdr "CONCAT_WS(' ', direction, tenant_id, IFNULL(source_trunk, '-'), destination_trunk, disposition)" "dst = '34968123456'")" "out $T1 - carrier1 ANSWERED"
 check "internal call: direction internal, tenant of the caller" is "$(cdr "CONCAT_WS(' ', direction, tenant_id, IFNULL(agent_id, '-'))" "dst = '2002'")" "internal $T1 -"
 check "new legs wait as unrated" is "$(sql cdr -e "SELECT COUNT(*) FROM cdr WHERE rating_status <> 'unrated'")" 0
-
-section "Prices"
-sql billing -e "
-INSERT INTO billing_profiles (id, name) VALUES (1, 'Tenant out'), (2, 'Tenant in'), (3, 'Carrier out'), (4, 'Carrier in');
-INSERT INTO billing_zones (id, billing_profile_id, zone, detail) VALUES
-  (1, 1, 'Europe', 'Spain'), (2, 1, 'Europe', 'Spain mobile'), (3, 2, 'Inbound', 'Spain'),
-  (4, 3, 'Europe', 'Spain'), (5, 3, 'Europe', 'Spain mobile'), (6, 4, 'Inbound', 'Any');
-INSERT INTO billing_fees (billing_profile_id, billing_zone_id, destination, init_rate, init_interval, follow_rate, follow_interval) VALUES
-  (1, 1, '^34.*\$', 0.06, 60, 0.06, 1), (1, 2, '^346.*\$', 0.12, 1, 0.12, 1),
-  (2, 3, '^34.+\$', 0.03, 1, 0.03, 1),
-  (3, 4, '^34.*\$', 0.02, 1, 0.02, 1), (3, 5, '^346.*\$', 0.05, 1, 0.05, 1),
-  (4, 6, '^.+\$', 0, 1, 0, 1);
-INSERT INTO billing_tenants (tenant_id, name, in_billing_profile_id, out_billing_profile_id) VALUES
-  ('$T1', 'Tenant 1', 2, 1), ('$T2', 'Tenant 2', 2, 1);
-INSERT INTO billing_carriers (trunk, name, in_billing_profile_id, out_billing_profile_id) VALUES ('carrier1', 'Carrier 1', 4, 3);" >/dev/null
-
-section "Rating"
-check "avr-rate rates every pending leg" grep -q "CDRs rated" <<<"$(rate)"
-check "nothing left unrated" is "$(sql cdr -e "SELECT COUNT(*) FROM cdr WHERE rating_status = 'unrated'")" 0
-# Expected price of a leg: rate per minute, by the second.
-per_second() { sql cdr -e "SELECT ROUND($1 * billsec / 60, 4) FROM cdr WHERE direction IS NOT NULL AND $2"; }
-check "in: tenant price 0.03/min, carrier 0, ok" is "$(cdr "CONCAT_WS(' ', cost, carrier_cost, rating_status)" "dst = '34968000001'")" "$(per_second 0.03 "dst = '34968000001'") 0.0000 ok"
-check "out: first 60 s at 0.06/min, carrier 0.02/min" is "$(cdr "CONCAT_WS(' ', cost, carrier_cost, billing_zone_id, carrier_billing_zone_id)" "dst = '34968123456'")" "0.0600 $(per_second 0.02 "dst = '34968123456'") 1 4"
-check "longest expression wins (^346 before ^34)" is "$(cdr "CONCAT_WS(' ', cost, billing_zone_id, carrier_billing_zone_id)" "dst = '34600111222'")" "$(per_second 0.12 "dst = '34600111222'") 2 5"
-check "tenant without prices: failed_no_tenant" is "$(cdr rating_status "dst = '34968000004'")" failed_no_tenant
-check "internal call ignored" is "$(cdr rating_status "dst = '2002'")" ignored
-check "untagged legs (Local channels) ignored" is "$(sql cdr -e "SELECT COUNT(*) FROM cdr WHERE direction IS NULL AND rating_status <> 'ignored'")" 0
-
-section "Balances"
-day="$(sql cdr -e "SELECT DATE(MIN(calldate)) FROM cdr")"
-balance() { sql billing -e "SELECT CONCAT_WS(' ', calls, billsec, cost, carrier_cost) FROM tenant_balances WHERE tenant_id = '$1' AND period = '$2' AND direction = '$3'"; }
-sum() { sql cdr -e "SELECT CONCAT_WS(' ', COUNT(*), SUM(billsec), SUM(cost), SUM(carrier_cost)) FROM cdr WHERE tenant_id = '$1' AND direction = '$2' AND rating_status = 'ok'"; }
-check "daily out balance of tenant 1 (out call + transfer)" is "$(balance $T1 daily out)" "$(sum $T1 out)"
-check "daily in balance of tenant 1" is "$(balance $T1 daily in)" "$(sum $T1 in)"
-check "monthly equals daily on a single day" is "$(balance $T2 monthly in)" "$(balance $T2 daily in)"
-check "out balance has 2 calls" is "$(balance $T1 daily out | cut -d' ' -f1)" 2
-check "daily balance dated on the call day" is "$(sql billing -e "SELECT COUNT(*) FROM tenant_balances WHERE period = 'daily' AND start = '$day'")" "$(sql billing -e "SELECT COUNT(*) FROM tenant_balances WHERE period = 'daily'")"
-
-section "Retry and rerate"
-sql billing -e "INSERT INTO billing_tenants (tenant_id, in_billing_profile_id, out_billing_profile_id) VALUES ('$T3', 2, 1)" >/dev/null
-rate --retry-failed >/dev/null
-check "--retry-failed rates the tenant added since" is "$(cdr rating_status "dst = '34968000004'")" ok
-sql billing -e "UPDATE billing_fees SET init_rate = 0.6, follow_rate = 0.6 WHERE billing_profile_id = 2" >/dev/null
-rate "--rerate-from=$day" >/dev/null
-check "--rerate-from applies new prices" is "$(cdr cost "dst = '34968000001'")" "$(per_second 0.6 "dst = '34968000001'")"
-check "and rebuilds the balances" is "$(balance $T1 daily in)" "$(sum $T1 in)"
-
-sql billing -e "UPDATE billing_carriers SET in_billing_profile_id = NULL WHERE trunk = 'carrier1'" >/dev/null
-rate "--rerate-from=$day" >/dev/null
-check "carrier without incoming profile: incoming legs cost it 0, ok" is "$(cdr "CONCAT_WS(' ', carrier_cost, IFNULL(carrier_billing_profile_id, '-'), rating_status)" "dst = '34968000001'")" "0.0000 - ok"
-sql billing -e "UPDATE billing_carriers SET out_billing_profile_id = NULL WHERE trunk = 'carrier1'" >/dev/null
-rate "--rerate-from=$day" >/dev/null
-check "but outgoing legs without a profile fail" is "$(cdr rating_status "dst = '34968123456'")" failed_no_carrier
-sql billing -e "UPDATE billing_carriers SET in_billing_profile_id = 4, out_billing_profile_id = 3 WHERE trunk = 'carrier1'" >/dev/null
-rate "--rerate-from=$day" >/dev/null
-
-section "cdr_report view"
-check "one line per tagged leg" is "$(sql billing -e "SELECT COUNT(*) FROM cdr_report")" "$(sql cdr -e "SELECT COUNT(*) FROM cdr WHERE direction IS NOT NULL")"
-check "human duration and destination name" grep -qE "^34600111222 00h 00m 0[0-9]s Spain mobile$" <<<"$(sql billing -e "SELECT CONCAT_WS(' ', destination, duration_human, destination_name) FROM cdr_report WHERE destination = '34600111222'")"
-check "margin = cost - carrier_cost" is "$(sql billing -e "SELECT COUNT(*) FROM cdr_report WHERE margin <> cost - carrier_cost")" 0
 
 section "Asterisk health"
 check "no CDR insert errors" bash -c "! docker compose -f $PWD/compose.yml logs avr-asterisk 2>&1 | grep -iE 'cdr_adaptive_odbc.*(error|fail)'"

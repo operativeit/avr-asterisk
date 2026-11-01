@@ -1,6 +1,6 @@
-# Test environment for CDR tagging and rating (see run.sh): MySQL, the image
+# Test environment for CDR tagging (see run.sh): MySQL, the image
 # built from this repository, a phone and a carrier (published image).
-name: avr-asterisk-billing-test
+name: avr-asterisk-cdr-tags-test
 
 x-helper: &helper
   image: operativeit/avr-asterisk
@@ -36,7 +36,7 @@ services:
 
   avr-asterisk:
     build: ../..
-    image: avr-asterisk:billing-test
+    image: avr-asterisk:cdr-tags-test
     command: ["asterisk", "-f", "-vvv"]
     depends_on:
       avr-asterisk-db: { condition: service_healthy }

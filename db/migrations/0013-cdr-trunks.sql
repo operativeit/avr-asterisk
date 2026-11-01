@@ -6,8 +6,9 @@
 --                      (outgoing: the trunk it dials)
 --
 -- An agent's transfer to an outside number keeps both on its out leg: it came
--- in on one trunk and went out on another. avr-rate takes the carrier cost of
--- an in leg from source_trunk, of an out leg from destination_trunk.
+-- in on one trunk and went out on another. The rating (elokia-billing) takes
+-- the carrier cost of an in leg from source_trunk, of an out leg from
+-- destination_trunk.
 -- Existing values of trunk move to source_trunk (in) or destination_trunk (out).
 --
 -- cdr, cdr_archives and cdr_swap keep the same columns in the same order.
@@ -32,27 +33,3 @@ UPDATE cdr_archives SET destination_trunk = trunk WHERE direction = 'out' AND tr
 ALTER TABLE cdr DROP COLUMN `trunk`;
 ALTER TABLE cdr_archives DROP COLUMN `trunk`;
 ALTER TABLE cdr_swap DROP COLUMN `trunk`;
-
-USE `{{billing_db}}`;
-
-CREATE OR REPLACE SQL SECURITY DEFINER VIEW cdr_report AS
-SELECT c.calldate,
-       c.tenant_id,
-       c.agent_id,
-       c.direction,
-       c.dst AS destination,
-       c.billsec AS duration,
-       TIME_FORMAT(SEC_TO_TIME(c.billsec), '%Hh %im %ss') AS duration_human,
-       COALESCE(z.detail, z.zone) AS destination_name,
-       c.cost,
-       c.carrier_cost,
-       c.cost - c.carrier_cost AS margin,
-       c.source_trunk,
-       c.destination_trunk,
-       c.disposition,
-       c.rating_status,
-       c.uniqueid,
-       c.linkedid
-  FROM `{{cdr_db}}`.cdr c
-  LEFT JOIN billing_zones z ON z.id = c.billing_zone_id
- WHERE c.direction IS NOT NULL;
