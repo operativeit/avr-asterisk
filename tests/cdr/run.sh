@@ -33,9 +33,11 @@ event()      { root -e "SELECT CONCAT(status, ' ', interval_value, ' ', interval
 
 start() {
     "${DC[@]}" up -d --build --quiet-pull >work/up.log 2>&1 || { cat work/up.log; exit 1; }
+    # Wait for every migration: a later one altering cdr would race the tests.
+    local total
+    total="$(ls ../../db/migrations/*.sql | wc -l | tr -d ' ')"
     for _ in $(seq 1 90); do
-        "${DC[@]}" logs --no-log-prefix avr-asterisk 2>&1 | grep -qE "avr-db-migrate: (applying 0006|schema is up to date)" &&
-            [ "$(root -e "SELECT COUNT(*) FROM asterisk.schema_migrations WHERE version='0006-cdr-partitions.sql'")" = 1 ] && return 0
+        [ "$(root -e "SELECT COUNT(*) FROM asterisk.schema_migrations")" = "$total" ] && return 0
         "${DC[@]}" logs --no-log-prefix avr-asterisk 2>&1 | grep -q "avr-db-migrate: ERROR" && break
         sleep 2
     done
@@ -66,7 +68,7 @@ check "cdr next year only from 15 December" is "$(parts cdr $((Y + 1)))" "$expec
 check "cdr and cdr_archives have pmax" is "$(root -e "SELECT COUNT(*) FROM information_schema.partitions WHERE table_schema='cdr' AND partition_name='pmax' AND table_name IN ('cdr','cdr_archives')")" 2
 check "cdr_archives starts with pmin and pmax only" is "$(root -e "SELECT GROUP_CONCAT(partition_name ORDER BY partition_ordinal_position) FROM information_schema.partitions WHERE table_schema='cdr' AND table_name='cdr_archives'")" "pmin,pmax"
 check "primary key (calldate, id)" is "$(root -e "SELECT GROUP_CONCAT(column_name ORDER BY seq_in_index) FROM information_schema.statistics WHERE table_schema='cdr' AND table_name='cdr' AND index_name='PRIMARY'")" "calldate,id"
-check "indexes src/dst/accountcode with calldate, uniqueid, id" is "$(root -e "SELECT GROUP_CONCAT(DISTINCT index_name ORDER BY index_name) FROM information_schema.statistics WHERE table_schema='cdr' AND table_name='cdr' AND index_name <> 'PRIMARY'")" "accountcode_calldate,dst_calldate,id,src_calldate,uniqueid"
+check "indexes src/dst/accountcode/tenant/rating/export with calldate, uniqueid, linkedid, id" is "$(root -e "SELECT GROUP_CONCAT(DISTINCT index_name ORDER BY index_name) FROM information_schema.statistics WHERE table_schema='cdr' AND table_name='cdr' AND index_name <> 'PRIMARY'")" "accountcode_calldate,dst_calldate,export_status_calldate,id,linkedid,rating_status_calldate,src_calldate,tenant_calldate,uniqueid"
 check "cdr_settings default retention: 4 years" is "$(root cdr -e 'SELECT retention_years FROM cdr_settings')" 4
 
 section "Queries read only the partitions they need"
