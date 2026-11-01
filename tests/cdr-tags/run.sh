@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Test for CDR tagging (0009-cdr-billing, 0013-cdr-trunks and cdr_adaptive_odbc):
+# Test for CDR tagging (0002-cdr and cdr_adaptive_odbc):
 # real calls between a carrier, our Asterisk and a phone, then the tags of the
 # CDRs they leave. The accounts and DDIs are static (test-pjsip.conf,
 # test-extensions.conf) like elokia-provision writes them; provision itself and
@@ -48,8 +48,7 @@ echo "  building the image and starting the environment..."
 ready() { ast "odbc show cdr" | grep -q "active connections: 1"; }
 wait_for "Asterisk connected to the databases" ready
 check "cdr_adaptive_odbc loaded, cdr_odbc gone" bash -c "docker compose -f $PWD/compose.yml exec -T avr-asterisk asterisk -rx 'module show like cdr_' | grep -q cdr_adaptive_odbc && ! docker compose -f $PWD/compose.yml exec -T avr-asterisk ls /usr/lib/asterisk/modules/cdr_odbc.so"
-check "migrations 0009 and 0013 applied" is "$(sql asterisk -e "SELECT COUNT(*) FROM schema_migrations WHERE version IN ('0009-cdr-billing.sql', '0013-cdr-trunks.sql')")" 2
-check "trunk replaced by source_trunk and destination_trunk" is "$(sql cdr -e "SELECT GROUP_CONCAT(column_name ORDER BY column_name) FROM information_schema.columns WHERE table_schema = 'cdr' AND table_name = 'cdr' AND column_name LIKE '%trunk'")" "destination_trunk,source_trunk"
+check "tag columns, no rating columns" is "$(sql cdr -e "SELECT GROUP_CONCAT(column_name ORDER BY ordinal_position) FROM information_schema.columns WHERE table_schema = 'cdr' AND table_name = 'cdr' AND ordinal_position > 17")" "linkedid,tenant_id,agent_id,direction,source_trunk,destination_trunk"
 check "cdr, cdr_archives and cdr_swap have the same columns" is \
     "$(sql cdr -e "SELECT COUNT(DISTINCT cols) FROM (SELECT table_name, GROUP_CONCAT(column_name, column_type, IFNULL(column_default, '') ORDER BY ordinal_position) cols FROM information_schema.columns WHERE table_schema = 'cdr' AND table_name IN ('cdr', 'cdr_archives', 'cdr_swap') GROUP BY table_name) t")" 1
 
@@ -70,7 +69,7 @@ ast "channel originate PJSIP/2002@ours application Wait 4" phone >/dev/null     
 legs() { [ "$(sql cdr -e "SELECT COUNT(*) FROM cdr WHERE direction IS NOT NULL")" -ge 7 ]; }
 wait_for "7 tagged CDR legs written" legs
 sleep 2
-sql cdr -e "SELECT direction, dst, tenant_id, agent_id, source_trunk, destination_trunk, disposition, billsec, rating_status FROM cdr WHERE direction IS NOT NULL ORDER BY calldate, id" >work/legs.txt
+sql cdr -e "SELECT direction, dst, tenant_id, agent_id, source_trunk, destination_trunk, disposition, billsec FROM cdr WHERE direction IS NOT NULL ORDER BY calldate, id" >work/legs.txt
 
 check "ddi to account: in, tenant, source trunk" is "$(cdr "CONCAT_WS(' ', tenant_id, IFNULL(agent_id, '-'), source_trunk, IFNULL(destination_trunk, '-'), disposition)" "dst = '34968000001'")" "$T1 - carrier1 - ANSWERED"
 check "ddi to agent: in, tenant and agent" is "$(cdr "CONCAT_WS(' ', direction, tenant_id, agent_id)" "dst = '34968000002'")" "in $T2 $A2"
@@ -81,7 +80,6 @@ check "transfer legs share the linkedid" is "$(sql cdr -e "SELECT COUNT(DISTINCT
 check "transfer out leg: came in on one trunk, went out on another" is "$(cdr "CONCAT_WS(' ', source_trunk, destination_trunk)" "dst = '34600111222'")" "carrier1 carrier1"
 check "outgoing: tenant from the endpoint, dst in E.164, destination trunk" is "$(cdr "CONCAT_WS(' ', direction, tenant_id, IFNULL(source_trunk, '-'), destination_trunk, disposition)" "dst = '34968123456'")" "out $T1 - carrier1 ANSWERED"
 check "internal call: direction internal, tenant of the caller" is "$(cdr "CONCAT_WS(' ', direction, tenant_id, IFNULL(agent_id, '-'))" "dst = '2002'")" "internal $T1 -"
-check "new legs wait as unrated" is "$(sql cdr -e "SELECT COUNT(*) FROM cdr WHERE rating_status <> 'unrated'")" 0
 
 section "Asterisk health"
 check "no CDR insert errors" bash -c "! docker compose -f $PWD/compose.yml logs avr-asterisk 2>&1 | grep -iE 'cdr_adaptive_odbc.*(error|fail)'"

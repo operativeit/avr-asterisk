@@ -129,7 +129,7 @@ At startup, before Asterisk, `entrypoint.sh` runs `avr-db-migrate`, which applie
 | `CDR_DATABASE` (`cdr`) | Call detail records, written by `cdr_adaptive_odbc` through a second ODBC connection named `cdr` |
 | `RECORDINGS_DATABASE` (`recordings`) | Call recording metadata |
 
-A database created before migrations existed already has the realtime schema: `0001-asterisk.sql` is recorded as applied without running, and the newer migrations are applied on top. Old `cdr` / `recordings` tables in the realtime database are left untouched.
+There is one migration per database: `0001-asterisk.sql` (realtime), `0002-cdr.sql` and `0003-recordings.sql`. They were squashed before any data had to be kept, so a database created by an older image (with `0004`-`0014` recorded) or before migrations existed (a realtime schema without `schema_migrations`) is refused with an error: recreate it.
 
 **Accounts, trunks and DDIs** are not created here: [elokia-provision](https://github.com/elokia-hq/elokia-provision) owns the `provision` database, whose triggers write the realtime rows (`ps_*`, `extensions`) of this image, and its demo data. This image only reads the realtime tables. Databases that applied the old provision migrations (`0004`, `0005`, `0008`, `0010`, `0012`, `0014`) keep their rows in `schema_migrations`; `avr-db-migrate` only looks at the files it ships.
 
@@ -170,9 +170,8 @@ SELECT event_schema, event_name, status, last_executed FROM information_schema.e
 - **Late rows** (a CDR of 31 December written after midnight, a recording of an archived month) still insert: they land in the main table's first day partition and reach their own day in the archive at the next archiving.
 - **`recordings.uuid`** is unique together with `created_at` (MySQL requires the partitioning column in every unique key). Writers must give a recording a fixed `created_at` per call, so that a retry hits the key and `ON DUPLICATE KEY UPDATE` applies; elokia-infra's `save_recording.php` uses the call start.
 - Recording partitions are on `UNIX_TIMESTAMP(created_at)`: day boundaries follow the MySQL server time zone when they are created, so do not change it afterwards.
-- On a database created before 0006/0007, existing rows are moved once to their final place (main table or archive); rows already older than the retention period are not kept.
 
-`tests/cdr/run.sh` and `tests/recordings/run.sh` simulate the calendar (partition creation, archiving, late rows, purge, settings, and the conversion of existing tables).
+`tests/cdr/run.sh` and `tests/recordings/run.sh` simulate the calendar (partition creation, archiving, late rows, purge, settings).
 
 ### CDR tags: tenant, agent, direction and trunks
 
@@ -212,7 +211,7 @@ exten => _34X.,1,Set(CDR(destination_trunk)=carrier1)
 
 Asterisk writes one CDR per pair of channels in a bridge. A call the agent transfers to an outside number leaves two legs with the same `uniqueid` and `linkedid`: `in` (caller ↔ agent) and `out` (caller ↔ outside number, with `Set(CDR(direction)=out)` before going to `outgoing`). The `out` leg keeps the CDR variables of the first one, so it is billed to the same tenant and agent. Legs of Local channels carry no tags and are ignored.
 
-**Rating** is not done here: elokia-billing owns the price lists, tenants, carriers and balances (its own database) and writes `cost`, `carrier_cost`, the `billing_*_id` / `carrier_billing_*_id` columns, `rating_status` and `rated_at` of every `in`/`out` leg. New legs start as `rating_status = unrated`.
+**Rating** is not done here: elokia-billing only reads `cdr`, copies the tagged legs to its own database and rates them there (price lists, tenants, carriers, balances). The `cdr` table has the tags only, no rating columns.
 
 `tests/cdr-tags/run.sh` places real calls (DDI to an account and to an agent, a transfer, an outgoing and an internal call) between static accounts and checks the tags they leave.
 

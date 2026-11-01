@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Test for the recordings partitions (0007-recordings-partitions.sql): day
-# partitions, monthly archiving, purge, and the conversion of an existing
-# unpartitioned table. Time is simulated by calling the procedures the events
-# run with CURDATE() (create_partitions_at, archive_at, purge_at) with other
-# dates. Uses the environment of tests/cdr under another project name.
+# Test for the recordings partitions (0003-recordings.sql): day partitions,
+# monthly archiving and purge. Time is simulated by calling the procedures
+# the events run with CURDATE() (create_partitions_at, archive_at, purge_at)
+# with other dates. Uses the environment of tests/cdr under another project name.
 #
 #   tests/recordings/run.sh          # leaves nothing running when it ends
 #   KEEP=1 tests/recordings/run.sh   # keep the containers for inspection
@@ -39,7 +38,7 @@ add_rec() {  # uuid created_at
 start() {
     "${DC[@]}" up -d --build --quiet-pull >work/up.log 2>&1 || { cat work/up.log; exit 1; }
     for _ in $(seq 1 150); do
-        [ "$(root -e "SELECT COUNT(*) FROM asterisk.schema_migrations WHERE version='0007-recordings-partitions.sql'" 2>/dev/null)" = 1 ] && return 0
+        [ "$(root -e "SELECT COUNT(*) FROM asterisk.schema_migrations" 2>/dev/null)" = "$(ls ../../db/migrations/*.sql | wc -l | tr -d ' ')" ] && return 0
         "${DC[@]}" logs --no-log-prefix avr-asterisk 2>&1 | grep -q "avr-db-migrate: ERROR" && break
         sleep 2
     done
@@ -58,7 +57,7 @@ rm -rf work && mkdir work
 
 section "New installation"
 echo "  building the image and starting MySQL..."
-check "migrations applied (0007 included)" start
+check "migrations applied" start
 check "event recordings_create_partitions: yearly, 15 December 03:00" is "$(event recordings_create_partitions)" "ENABLED 1 YEAR 12-15 03:00"
 check "event recordings_archive: daily 03:00" grep -qE "^ENABLED 1 DAY [0-9]{2}-[0-9]{2} 03:00$" <<<"$(event recordings_archive)"
 check "event recordings_purge: daily 03:30" grep -qE "^ENABLED 1 DAY [0-9]{2}-[0-9]{2} 03:30$" <<<"$(event recordings_purge)"
@@ -125,32 +124,6 @@ section "Settings: hot_months=0 archives the previous month too"
 root recordings -e "UPDATE recordings_settings SET hot_months = 0" >/dev/null
 archive_at "$((B + 1))-04-02" >/dev/null
 check "December archived" is "$(rows recordings "${B}12"):$(rows recordings_archives "${B}12")" "0:31"
-
-section "Existing database with an unpartitioned recordings table (like staging)"
-"${DC[@]}" down -v >/dev/null 2>&1
-mkdir -p work/init
-now_month="$(date +%Y-%m)-01"
-# From the 1st of the month, so day 31 never overflows (BSD date, then GNU date).
-months_ago() { date -j -v-"$1"m -f %Y-%m-%d "$now_month" +%Y-%m-01 2>/dev/null || date -d "$now_month -$1 month" +%Y-%m-01; }
-prev_month="$(months_ago 1)"
-old_month="$(months_ago 3)"
-very_old="$(months_ago 14)"
-{
-    echo "CREATE TABLE asterisk.schema_migrations (version VARCHAR(255) NOT NULL PRIMARY KEY, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP);"
-    for v in 0001-asterisk 0002-cdr 0003-recordings 0004-provision 0005-provision-strong-passwords 0006-cdr-partitions; do
-        echo "INSERT INTO asterisk.schema_migrations (version) VALUES ('$v.sql');"
-    done
-    sed -e 's/{{recordings_db}}/recordings/g' -e "s/{{app_user}}/asterisk/g" ../../db/migrations/0003-recordings.sql
-    for r in "cur:$now_month" "prev:$prev_month" "old:$old_month" "veryold:$very_old"; do
-        echo "INSERT INTO recordings.recordings (uuid, recording_path, recording_blob, recording_size, created_at) VALUES ('${r%%:*}', '/tmp/x.wav', 'audio', 5, '${r#*:} 10:00:00');"
-    done
-} > work/init/01-old.sql
-INIT_DIR="$PWD/work/init" start >/dev/null 2>&1
-check "0007 applied on the existing database" is "$(root -e "SELECT COUNT(*) FROM asterisk.schema_migrations WHERE version='0007-recordings-partitions.sql'")" 1
-check "no unpartitioned table left" is "$(root -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='recordings' AND table_name='recordings_unpartitioned'")" 0
-check "current and previous month stay in recordings" is "$(root recordings -e "SELECT GROUP_CONCAT(uuid ORDER BY created_at) FROM recordings")" "prev,cur"
-check "3 months old: archived" is "$(root recordings -e "SELECT GROUP_CONCAT(uuid) FROM recordings_archives")" "old"
-check "14 months old: purged by the retention period" is "$(root recordings -e "SELECT COUNT(*) FROM recordings_archives WHERE uuid='veryold'")" 0
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

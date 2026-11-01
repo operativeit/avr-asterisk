@@ -1,1 +1,1 @@
-Intentionally empty. run.sh mounts a database with an unpartitioned cdr table here to test the conversion.
+Intentionally empty. run.sh mounts the schema_migrations of an older image here to test that it is refused.
