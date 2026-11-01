@@ -110,10 +110,8 @@ RUN set -ex; \
     menuselect/menuselect --disable pbx_spool menuselect.makeopts; \
     menuselect/menuselect --disable pbx_loopback menuselect.makeopts; \
     menuselect/menuselect --disable pbx_dundi menuselect.makeopts; \
-    menuselect/menuselect --disable func_env menuselect.makeopts; \
     menuselect/menuselect --disable func_speex menuselect.makeopts; \
     menuselect/menuselect --disable func_srv menuselect.makeopts; \
-    menuselect/menuselect --disable func_groupcount menuselect.makeopts; \
     menuselect/menuselect --disable func_holdintercept menuselect.makeopts; \
     menuselect/menuselect --disable func_aes menuselect.makeopts; \
     menuselect/menuselect --disable func_devstate menuselect.makeopts; \
