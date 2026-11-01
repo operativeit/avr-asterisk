@@ -115,7 +115,7 @@ You can override these configurations by mounting your own configuration files t
 - `ASTERISK_LANGUAGE`: Default language of the prompts (`defaultlanguage` in `asterisk.conf`), such as `es`, `fr` or `pt_BR` (default: `en`). Endpoints with their own `language` keep it. The prompts must be in `/var/lib/asterisk/sounds/<language>/`; otherwise Asterisk plays the English ones and the container logs a warning.
 - `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`: database server, realtime database and application user.
 - `MYSQL_ROOT_PASSWORD`: lets the container create and migrate the databases at startup (see [Databases](#databases)). Without it, migrations are skipped.
-- `CDR_DATABASE` (default `cdr`), `RECORDINGS_DATABASE` (default `recordings`), `PROVISION_DATABASE` (default `provision`): names of the other databases.
+- `CDR_DATABASE` (default `cdr`), `RECORDINGS_DATABASE` (default `recordings`): names of the other databases.
 - `DB_MIGRATE=no`: skip the migrations (for example when they are managed elsewhere).
 - `DB_MIGRATE_TIMEOUT` (default `120`): seconds to wait for MySQL before failing.
 
@@ -128,11 +128,10 @@ At startup, before Asterisk, `entrypoint.sh` runs `avr-db-migrate`, which applie
 | `MYSQL_DATABASE` (`asterisk`) | Realtime configuration: PJSIP (`ps_*`), dialplan (`extensions`), queues, voicemail |
 | `CDR_DATABASE` (`cdr`) | Call detail records, written by `cdr_adaptive_odbc` through a second ODBC connection named `cdr` |
 | `RECORDINGS_DATABASE` (`recordings`) | Call recording metadata |
-| `PROVISION_DATABASE` (`provision`) | Accounts, trunks and DDIs created with one `INSERT` (below) |
 
-There is one migration per database: `0001-asterisk.sql` (realtime), `0002-cdr.sql`, `0003-recordings.sql` and `0004-provision.sql`. They were squashed before any data had to be kept, so a database created by an older image (with `0005`-`0014` recorded) or before migrations existed (a realtime schema without `schema_migrations`) is refused with an error: recreate it.
+There is one migration per database: `0001-asterisk.sql` (realtime), `0002-cdr.sql` and `0003-recordings.sql`. They were squashed before any data had to be kept, so a database created by an older image (with `0004`-`0014` recorded) or before migrations existed (a realtime schema without `schema_migrations`) is refused with an error: recreate it.
 
-Demo data (endpoints `1000`/`1001`, a trunk, a queue) is in `db/seed/demo.sql`; it is not applied automatically.
+**Accounts, trunks and DDIs** are not created here: [elokia-provision](https://github.com/elokia-hq/elokia-provision) owns the `provision` database, whose triggers write the realtime rows (`ps_*`, `extensions`) of this image, and its demo data. This image only reads the realtime tables. Databases that applied the old provision migrations (`0004`, `0005`, `0008`, `0010`, `0012`, `0014`) keep their rows in `schema_migrations`; `avr-db-migrate` only looks at the files it ships.
 
 ### CDR and recordings: partitions, archive and retention
 
@@ -174,50 +173,6 @@ SELECT event_schema, event_name, status, last_executed FROM information_schema.e
 
 `tests/cdr/run.sh` and `tests/recordings/run.sh` simulate the calendar (partition creation, archiving, late rows, purge, settings).
 
-### Provisioning accounts, trunks and DDIs
-
-Triggers on the `provision` database write the realtime rows, so an account works right after its `INSERT`, without a reload:
-
-```sql
--- Phone registering here over UDP/TCP/TLS, plus a 2003-webrtc endpoint for WebRTC; password generated
--- (see it with: SELECT password FROM accounts WHERE name = '2003')
-INSERT INTO accounts (name, type, transports, callerid) VALUES ('2003', 'local', 'udp,tcp,tls,wss', 'Ana <2003>');
-
--- Extension of another PBX (any transport and port); calls to it go to an AVR agent
-INSERT INTO accounts (name, type, host, port, transport, username, password, agent_uuid)
-VALUES ('pbx-128', 'external', 'pbx.example.com', 5062, 'tcp', '128', '…', '01a13595-4f65-7d9c-83cd-88dc57dfbce3');
-
--- SIP trunk authenticated by IP (or register=1 with username/password)
-INSERT INTO accounts (name, type, host, match_ips) VALUES ('carrier1', 'trunk', 'sip.carrier.example', '203.0.113.10');
-
--- WhatsApp Business calling (identified by the X-FB-External-Domain header)
-INSERT INTO accounts (name, type, username, password, from_domain) VALUES ('wa-main', 'whatsapp', '+34968000678', '…', 'crm.example.com');
-
--- DDIs to an account or to an AVR agent
-INSERT INTO ddis (ddi, account) VALUES ('34968012704', '2003');
-INSERT INTO ddis (ddi, agent_uuid) VALUES ('+34968000678', '01a13595-4f65-7d9c-83cd-88dc57dfbce3');
-```
-
-| `type` | What it is | Realtime rows (`<name>` = account name) |
-|---|---|---|
-| `local` | A phone registering on this Asterisk | `ps_auths` (`md5_cred`), `ps_aors`, `ps_endpoints` without a fixed transport; with `wss` in `transports`, also `<name>-webrtc` |
-| `external` | This Asterisk registers as an extension of another PBX | `<name>-auth`, `ps_aors`, `ps_endpoints`, `<name>-reg` (`line=yes`, so extensions of the same PBX stay apart) |
-| `trunk` | SIP provider | Like `external` with `register=1`; with `register=0`, `<name>-identify` on `match_ips` (default `host`) |
-| `whatsapp` | WhatsApp Business calling (Meta) | TLS + DTLS-SRTP endpoint, `<name>-auth`, `<name>-identify` on `X-FB-External-Domain: wa.meta.vc` |
-
-- A `local` account accepts up to `max_contacts` devices at once (default 5; with `remove_existing`, a new one replaces the oldest).
-- A `local` account without `password` gets a generated one: 16 characters from a cryptographically secure source (`RANDOM_BYTES`), with at least one lowercase letter, uppercase letter, digit and symbol. Symbols are limited to `! % * + - . ^ _ ~`, which need no quoting in phone configs, `.env` files, URLs or shells. Asterisk only stores its hash (`md5_cred`); `provision.accounts` keeps it readable.
-- `transport` (`udp`, `tcp`, `tls`) and `port` (any) describe the remote side of `external`, `trunk` and `whatsapp` accounts; defaults are `udp` (`tls` for WhatsApp) and 5060 (5061 with `tls`).
-- Default contexts: `local` → `from-phones`, `external` → `internal`, `trunk` → `from-trunk`, `whatsapp` → `from-whatsapp`.
-- `agent_uuid` adds `internal/<username>` → `GoSub(avr,<agent_uuid>,1(avr-core:5001))`; a `local` account without it gets `internal/<username>` → `Dial(<its endpoints>,30)`, so the other phones can call it and its phone and browser ring at once (same endpoints as its DDIs, below). DDIs become `incoming/<ddi>` → `Dial(PJSIP/<account>,…)` or, for a `local` account, the endpoints it has: `Dial(PJSIP/<account>&PJSIP/<account>-webrtc,…)` with `wss` among other transports, `Dial(PJSIP/<account>-webrtc,…)` when `wss` is its only transport (changing `transports` rewrites its DDIs); or `Dial(local/<agent_uuid>@internal,…)`.
-- The dialplan must provide those contexts: `internal` and `incoming` with `switch => Realtime/@`, and `from-trunk` / `from-whatsapp` going to `incoming` for known DDIs.
-- `UPDATE` regenerates the rows and keeps the devices already registered; `enabled=0` or `DELETE` removes them (and their registrations); `name` and `type` cannot change; accounts with DDIs cannot be deleted. Invalid rows fail with a `provision: …` error and nothing is written; names already used in Asterisk are refused.
-- **Outbound registrations** (`external`, `trunk` with `register=1`): Asterisk starts a new realtime registration only once it loads it (`pjsip show registration <name>-reg`; `pjsip send register` fails with "Unable to retrieve registration" until then) and renews it by itself afterwards; a deleted one keeps running until `pjsip send unregister <name>-reg`. The triggers queue these actions in `provision.registration_queue` (`processed_at IS NULL`) for an external worker.
-- PJSIP cannot restrict per endpoint the transport a request arrives on: `transports` decides which endpoints exist, not which transport is accepted.
-- **WebRTC clients must use `<username>-webrtc`** as SIP user and auth user (same password), e.g. `2003-webrtc` over `wss://<host>:8089/ws`. Asterisk picks the endpoint by username, not by transport: a browser registering as `2003` is accepted over wss too, but lands on the plain endpoint `2003`, whose calls offer plain RTP that browsers (always DTLS-SRTP) reject. `<name>-webrtc` has `webrtc=yes`, which in Asterisk 23 implies `media_encryption=dtls`, `dtls_setup=actpass`, `dtls_verify=fingerprint`, `ice_support`, `use_avpf`, `rtcp_mux`, `bundle` and an auto-generated DTLS certificate. One username cannot serve both endpoints: the registrar also takes the AOR from the username.
-
-`tests/provision/run.sh` builds the image and checks the migrations (an empty database, and one created before migrations refused), every account type, DDIs and CDRs against helper Asterisk containers, and a WebRTC registration over wss (`webrtc-client.sh`, bash + websocat).
-
 ### CDR tags: tenant, agent, direction and trunks
 
 Every call leg is tagged in the CDR at call time and rated afterwards by elokia-billing, twice: what the tenant pays and what the carrier charges, so the margin of each call is known.
@@ -226,19 +181,14 @@ Every call leg is tagged in the CDR at call time and rated afterwards by elokia-
 
 | Column | Set by |
 |---|---|
-| `tenant_id` | provision: `ddis.tenant_uuid` (the incoming extension runs `Set(CDR(tenant_id)=…)` before the `Dial`), or `accounts.tenant_uuid` (the endpoint's `set_var=__TENANT_ID=…`, copied by the dialplan) |
-| `agent_id` | provision: `ddis.agent_uuid` (`Set(CDR(agent_id)=…)`) or `accounts.agent_uuid` (`set_var=__AGENT_ID=…`) |
+| `tenant_id` | elokia-provision: `ddis.tenant_uuid` (the incoming extension runs `Set(CDR(tenant_id)=…)` before the `Dial`), or `accounts.tenant_uuid` (the endpoint's `set_var=__TENANT_ID=…`, copied by the dialplan) |
+| `agent_id` | elokia-provision: `ddis.agent_uuid` (`Set(CDR(agent_id)=…)`) or `accounts.agent_uuid` (`set_var=__AGENT_ID=…`) |
 | `direction` | dialplan: `in` (`from-trunk`), `out` (to a carrier), `internal` |
-| `source_trunk` | dialplan: the provision account of the carrier the call came in on (`${CHANNEL(endpoint)}` in `from-trunk` / `from-whatsapp`) |
-| `destination_trunk` | dialplan: the provision account of the carrier the call went out on (the trunk `outgoing` dials). A transfer's `out` leg has both |
+| `source_trunk` | dialplan: the account (endpoint) of the carrier the call came in on (`${CHANNEL(endpoint)}` in `from-trunk` / `from-whatsapp`) |
+| `destination_trunk` | dialplan: the account of the carrier the call went out on (the trunk `outgoing` dials). A transfer's `out` leg has both |
 | `linkedid` | Asterisk: the same for every leg of one call |
 
-```sql
-INSERT INTO ddis (ddi, agent_uuid, tenant_uuid) VALUES ('34968000002', '<agent uuid>', '<tenant uuid>');
-INSERT INTO accounts (name, type, tenant_uuid) VALUES ('2001', 'local', '<tenant uuid>');
-```
-
-The dialplan sets the rest (see `tests/cdr-tags/test-extensions.conf`):
+elokia-provision writes `tenant_id` and `agent_id` (in the DDI's extension and the endpoint's `set_var`); `tests/cdr-tags/test-pjsip.conf` and `test-extensions.conf` show them as static configuration. The dialplan sets the rest (see `tests/cdr-tags/test-extensions.conf`):
 
 ```
 [from-trunk]
@@ -263,145 +213,7 @@ Asterisk writes one CDR per pair of channels in a bridge. A call the agent trans
 
 **Rating** is not done here: elokia-billing only reads `cdr`, copies the tagged legs to its own database and rates them there (price lists, tenants, carriers, balances). The `cdr` table has the tags only, no rating columns.
 
-`tests/cdr-tags/run.sh` places real calls (DDI to an account and to an agent, a transfer, an outgoing and an internal call) and checks the tags they leave.
-
-#### SQL examples
-
-Connect to the `provision` database as the application user (`MYSQL_USER`), for example:
-
-```bash
-docker compose exec avr-asterisk-db sh -c 'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" provision'
-```
-
-**Local accounts** (phones registering on this Asterisk). The SIP username is the account name unless `username` is given, and the realm is `asterisk`.
-
-```sql
--- Generated password: read it back after the INSERT
-INSERT INTO accounts (name, type, callerid) VALUES ('1000', 'local', 'Reception <1000>');
-SELECT name, username, password FROM accounts WHERE name = '1000';
-
--- Your own password, two devices at once, and WebRTC (also creates 1001-webrtc,
--- whose SIP username is 1001-webrtc with the same password)
-INSERT INTO accounts (name, type, password, max_contacts, transports, callerid)
-VALUES ('1001', 'local', 'Choose-a-strong-1', 2, 'udp,tcp,tls,wss', 'Sales <1001>');
-
--- Several accounts in one statement
-INSERT INTO accounts (name, type, callerid) VALUES
-  ('1002', 'local', 'Support <1002>'),
-  ('1003', 'local', 'Support <1003>');
-
--- Change the password, the caller ID or the allowed transports (rows regenerated at once)
-UPDATE accounts SET password = 'Another-strong-2' WHERE name = '1000';
-UPDATE accounts SET callerid = 'Front desk <1000>' WHERE name = '1000';
-UPDATE accounts SET transports = 'tls,wss' WHERE name = '1001';
-
--- Send calls for 1002 to an AVR agent instead of the phone (internal/1002 -> GoSub avr)
-UPDATE accounts SET agent_uuid = '01a13595-4f65-7d9c-83cd-88dc57dfbce3' WHERE name = '1002';
-UPDATE accounts SET agent_uuid = NULL WHERE name = '1002';
-
--- Disable (removes the realtime rows, keeps the account) and enable again
-UPDATE accounts SET enabled = 0 WHERE name = '1003';
-UPDATE accounts SET enabled = 1 WHERE name = '1003';
-```
-
-**External extensions** (this Asterisk registers as an extension of another PBX). After the `INSERT`, start the registration with `pjsip show registration <name>-reg` (see above).
-
-```sql
--- UDP 5060 (defaults)
-INSERT INTO accounts (name, type, host, username, password)
-VALUES ('pbx-128', 'external', 'pbx.example.com', '128', 'remote-secret');
-
--- TCP on a non-standard port; calls from that PBX to this extension go to an AVR agent
-INSERT INTO accounts (name, type, host, port, transport, username, password, agent_uuid)
-VALUES ('pbx-129', 'external', 'pbx.example.com', 5062, 'tcp', '129', 'remote-secret',
-        '01a13595-4f65-7d9c-83cd-88dc57dfbce3');
-
--- TLS (port defaults to 5061)
-INSERT INTO accounts (name, type, host, transport, username, password)
-VALUES ('pbx-130', 'external', 'pbx.example.com', 'tls', '130', 'remote-secret');
-```
-
-**SIP trunks**
-
-```sql
--- Authenticated by IP: calls from these addresses are this trunk (match_ips defaults to host)
-INSERT INTO accounts (name, type, host, match_ips)
-VALUES ('carrier1', 'trunk', 'sip.carrier.example', '203.0.113.10,203.0.113.11,198.51.100.0/24');
-
--- IP trunk that also asks for digest credentials on outbound calls
-INSERT INTO accounts (name, type, host, match_ips, username, password)
-VALUES ('carrier2', 'trunk', 'sip.carrier2.example', '192.0.2.20', 'acct42', 'trunk-secret');
-
--- Registering trunk over TLS (start it with: pjsip show registration voip1-reg)
-INSERT INTO accounts (name, type, host, register, transport, username, password)
-VALUES ('voip1', 'trunk', 'sip.provider.example', 1, 'tls', 'acct1', 'trunk-secret');
-```
-
-**WhatsApp Business calling**
-
-```sql
-INSERT INTO accounts (name, type, username, password, from_domain)
-VALUES ('wa-main', 'whatsapp', '+34968000678', 'meta-sip-password', 'crm.example.com');
-```
-
-**DDIs** (become `incoming/<ddi>` in the realtime dialplan; trunk and WhatsApp calls follow them)
-
-```sql
--- To an account, recorded on answer (record=1 by default); rings every endpoint of a local account
--- (1000 and, with wss in its transports, 1000-webrtc)
-INSERT INTO ddis (ddi, account) VALUES ('34968012704', '1000');
-
--- To an account, without recording and ringing for 20 seconds
-INSERT INTO ddis (ddi, account, record, ring_timeout) VALUES ('34968012705', '1001', 0, 20);
-
--- To an AVR agent (also creates internal/<agent_uuid> if missing)
-INSERT INTO ddis (ddi, agent_uuid) VALUES ('34968012706', '01a13595-4f65-7d9c-83cd-88dc57dfbce3');
-
--- The WhatsApp number to an agent
-INSERT INTO ddis (ddi, agent_uuid) VALUES ('+34968000678', '01a13595-4f65-7d9c-83cd-88dc57dfbce3');
-
--- Move a DDI to another account, or from an account to an agent
-UPDATE ddis SET account = '1001' WHERE ddi = '34968012704';
-UPDATE ddis SET account = NULL, agent_uuid = '01a13595-4f65-7d9c-83cd-88dc57dfbce3' WHERE ddi = '34968012705';
-
--- Delete a DDI (removes its dialplan row)
-DELETE FROM ddis WHERE ddi = '34968012706';
-```
-
-**Deleting accounts.** An account with DDIs cannot be deleted: move or delete its DDIs first. Deleting an `external` account or registering trunk queues an `unregister`; run `pjsip send unregister <name>-reg`.
-
-```sql
-DELETE FROM ddis WHERE account = '1000';
-DELETE FROM accounts WHERE name = '1000';
-
--- Several at once
-DELETE FROM accounts WHERE name IN ('1002', '1003');
-
-DELETE FROM accounts WHERE name = 'pbx-128';
-```
-
-**Queries**
-
-```sql
--- Accounts and their DDIs
-SELECT a.name, a.type, a.enabled, a.username, a.host, a.agent_uuid,
-       GROUP_CONCAT(d.ddi ORDER BY d.ddi) AS ddis
-  FROM accounts a LEFT JOIN ddis d ON d.account = a.name
- GROUP BY a.name ORDER BY a.type, a.name;
-
--- DDIs and where they go
-SELECT ddi, COALESCE(account, CONCAT('agent ', agent_uuid)) AS destination, ring_timeout, record FROM ddis ORDER BY ddi;
-
--- Registrations waiting for "pjsip show registration" / "pjsip send unregister"
-SELECT id, registration_id, action, created_at FROM registration_queue WHERE processed_at IS NULL ORDER BY id;
-UPDATE registration_queue SET processed_at = NOW() WHERE id = 1;
-
--- What the triggers wrote in the realtime database (MYSQL_DATABASE, here asterisk)
-SELECT id, transport, context, aors, auth, outbound_auth FROM asterisk.ps_endpoints WHERE id LIKE '1001%';
-SELECT context, exten, app, appdata FROM asterisk.extensions WHERE context IN ('incoming', 'internal') ORDER BY context, exten;
-```
-
-In the Asterisk console (`asterisk -rvvv`): `pjsip show endpoint 1001`, `pjsip show contacts`, `pjsip show registrations`, `dialplan show 34968012704@incoming`.
+`tests/cdr-tags/run.sh` places real calls (DDI to an account and to an agent, a transfer, an outgoing and an internal call) between static accounts and checks the tags they leave.
 
 ## Example Configuration Files
 

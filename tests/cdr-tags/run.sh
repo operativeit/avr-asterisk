@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Test for CDR tagging (0002-cdr, 0004-provision and cdr_adaptive_odbc): real
-# calls between a carrier, our Asterisk and a phone, then the tags of the CDRs
-# they leave. Rating is done by elokia-billing.
+# Test for CDR tagging (0002-cdr and cdr_adaptive_odbc):
+# real calls between a carrier, our Asterisk and a phone, then the tags of the
+# CDRs they leave. The accounts and DDIs are static (test-pjsip.conf,
+# test-extensions.conf) like elokia-provision writes them; provision itself and
+# the rating are tested in elokia-provision and elokia-billing.
 #
 #   tests/cdr-tags/run.sh          # leaves nothing running when it ends
 #   KEEP=1 tests/cdr-tags/run.sh   # keep the containers for inspection
@@ -50,20 +52,7 @@ check "tag columns, no rating columns" is "$(sql cdr -e "SELECT GROUP_CONCAT(col
 check "cdr, cdr_archives and cdr_swap have the same columns" is \
     "$(sql cdr -e "SELECT COUNT(DISTINCT cols) FROM (SELECT table_name, GROUP_CONCAT(column_name, column_type, IFNULL(column_default, '') ORDER BY ordinal_position) cols FROM information_schema.columns WHERE table_schema = 'cdr' AND table_name IN ('cdr', 'cdr_archives', 'cdr_swap') GROUP BY table_name) t")" 1
 
-section "Provision: tenants on DDIs and accounts"
-sql provision -e "INSERT INTO accounts (name, type, host, match_ips) VALUES ('carrier1', 'trunk', '172.31.252.14', '172.31.252.14');
-                  INSERT INTO accounts (name, type, password, tenant_uuid) VALUES ('2001', 'local', 'Ph0ne-2001-pass', '$T1');
-                  INSERT INTO accounts (name, type, agent_uuid, tenant_uuid) VALUES ('2002', 'local', '$A1', '$T1');
-                  INSERT INTO ddis (ddi, account, tenant_uuid, record) VALUES ('34968000001', '2001', '$T1', 0);
-                  INSERT INTO ddis (ddi, agent_uuid, tenant_uuid) VALUES ('34968000002', '$A2', '$T2');
-                  INSERT INTO ddis (ddi, account, tenant_uuid, record) VALUES ('34968000004', '2001', '$T3', 0);" >/dev/null
-check "tenant_uuid is validated" grep -q "tenant_uuid is not a UUID" <<<"$(sql provision -e "INSERT INTO ddis (ddi, account, tenant_uuid) VALUES ('34968000009', '2001', 'nope')")"
-check "endpoint 2001 sets __TENANT_ID" is "$(sql asterisk -e "SELECT set_var FROM ps_endpoints WHERE id='2001'")" "__TENANT_ID=$T1"
-check "endpoint 2002 sets __TENANT_ID and __AGENT_ID" is "$(sql asterisk -e "SELECT set_var FROM ps_endpoints WHERE id='2002'")" "__TENANT_ID=$T1;__AGENT_ID=$A1"
-check "ddi to agent: tenant, agent, then Dial" is "$(sql asterisk -e "SELECT GROUP_CONCAT(priority, ':', app ORDER BY priority) FROM extensions WHERE context='incoming' AND exten='34968000002'")" "1:Set,2:Set,3:Dial"
-check "ddi to account: tenant, then Dial" is "$(sql asterisk -e "SELECT GROUP_CONCAT(priority, ':', app, ':', appdata ORDER BY priority SEPARATOR '|') FROM extensions WHERE context='incoming' AND exten='34968000001'")" "1:Set:CDR(tenant_id)=$T1|2:Dial:PJSIP/2001,30"
-sql provision -e "UPDATE ddis SET ring_timeout = 20 WHERE ddi = '34968000001'" >/dev/null
-check "an UPDATE keeps the tags" is "$(sql asterisk -e "SELECT GROUP_CONCAT(appdata ORDER BY priority SEPARATOR '|') FROM extensions WHERE context='incoming' AND exten='34968000001'")" "CDR(tenant_id)=$T1|PJSIP/2001,20"
+section "Accounts"
 check "the endpoint shows the variables" grep -qE "__AGENT_ID +: $A1" <<<"$(ast "pjsip show endpoint 2002")"
 
 ast "pjsip send register *all" phone >/dev/null

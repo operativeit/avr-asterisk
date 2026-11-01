@@ -142,7 +142,7 @@ mkdir -p work/init
     done
 } > work/init/01-old.sql
 INIT_DIR="$PWD/work/init" start >/dev/null 2>&1
-check "refused: recreate the database" grep -q "0005-provision-strong-passwords.sql, which this image does not ship" <("${DC[@]}" logs --no-log-prefix avr-asterisk 2>&1)
+check "refused: recreate the database" grep -q "which this image does not ship: the database was created by an older image" <("${DC[@]}" logs --no-log-prefix avr-asterisk 2>&1)
 check "nothing applied" is "$(root -e "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = 'cdr'")" 0
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"

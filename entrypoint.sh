@@ -2,7 +2,7 @@
 
 set -e
 
-# Create or update the databases (realtime, cdr, recordings, provision)
+# Create or update the databases (realtime, cdr, recordings)
 # before Asterisk connects. Needs MYSQL_ROOT_PASSWORD; DB_MIGRATE=no skips it.
 if [ "${DB_MIGRATE:-yes}" != "no" ]; then
     if [ -n "${MYSQL_ROOT_PASSWORD:-}" ]; then
